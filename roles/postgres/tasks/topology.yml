@@ -1,0 +1,63 @@
+---
+- name: Validate that the replication topology is a mapping
+  ansible.builtin.assert:
+    that:
+      - postgres_replication_topology is mapping
+    fail_msg: >-
+      postgres_replication_topology must be a mapping of replica hostnames to
+      upstream hostnames.
+
+- name: Determine the default upstream for replicas
+  ansible.builtin.set_fact:
+    postgres_replica_default_upstream: "{{ (groups['postgres_primary'] | default([]))[0] | default('') }}"
+
+# Replicas that are absent from postgres_replication_topology keep the old
+# behaviour and connect directly to the primary. Explicit entries override
+# that default and create a cascade.
+- name: Build the effective replica-to-upstream map
+  ansible.builtin.set_fact:
+    postgres_effective_topology: >-
+      {{ dict(groups['postgres_replicas'] | default([])
+              | zip([postgres_replica_default_upstream]
+                    * (groups['postgres_replicas'] | default([]) | length)))
+         | combine(postgres_replication_topology) }}
+
+- name: Determine downstream replicas for this host
+  ansible.builtin.set_fact:
+    postgres_downstream_replicas: >-
+      {{ postgres_effective_topology | dict2items
+         | selectattr('value', 'equalto', inventory_hostname)
+         | map(attribute='key') | list }}
+
+- name: Determine the upstream server for this replica
+  ansible.builtin.set_fact:
+    postgres_upstream: "{{ postgres_effective_topology.get(inventory_hostname, '') }}"
+  when: inventory_hostname in groups['postgres_replicas'] | default([])
+
+- name: Determine all valid replication hosts
+  ansible.builtin.set_fact:
+    postgres_valid_replication_hosts: >-
+      {{ (groups['postgres_primary'] | default([]))
+         + (groups['postgres_replicas'] | default([])) }}
+
+- name: Validate the replication topology mapping
+  ansible.builtin.assert:
+    that:
+      - postgres_replication_topology.keys() | list | difference(groups['postgres_replicas'] | default([])) | length == 0
+      - postgres_replication_topology.values() | list | difference(postgres_valid_replication_hosts) | length == 0
+    fail_msg: >-
+      postgres_replication_topology must contain only replicas as keys and
+      primary or replica hostnames as values.
+  when: postgres_replication_topology | length > 0
+
+- name: Validate that every replica has a valid upstream
+  ansible.builtin.assert:
+    that:
+      - postgres_upstream | default('', true) | length > 0
+      - postgres_upstream | default('', true) != inventory_hostname
+      - postgres_upstream in postgres_valid_replication_hosts
+      - postgres_effective_topology.get(postgres_upstream, '') != inventory_hostname
+    fail_msg: >-
+      Set a valid upstream for {{ inventory_hostname }} in
+      postgres_replication_topology and avoid replication cycles.
+  when: inventory_hostname in groups['postgres_replicas'] | default([])

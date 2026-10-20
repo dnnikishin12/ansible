@@ -1,0 +1,76 @@
+---
+- name: Install rclone
+  ansible.builtin.apt:
+    name:
+      - rclone
+      - ca-certificates
+    state: present
+
+- name: Validate the rclone remote configuration
+  ansible.builtin.assert:
+    that:
+      - rclone_remote_type == "s3"
+      - rclone_s3_endpoint | default('') | length > 0
+      - "'example.com' not in (rclone_s3_endpoint | default(''))"
+      - rclone_s3_access_key_id | default('') | length > 0
+      - rclone_s3_secret_access_key | default('') | length > 0
+      - "'ChangeMe' not in (rclone_s3_access_key_id | default(''))"
+      - "'ChangeMe' not in (rclone_s3_secret_access_key | default(''))"
+    fail_msg: >-
+      rclone_manage_config=true requires an S3-compatible endpoint and
+      credentials. Fill the vault_rclone_* values or set
+      rclone_manage_config=false.
+  when: rclone_manage_config | bool
+  no_log: true
+
+- name: Create the rclone configuration directory
+  ansible.builtin.file:
+    path: "{{ rclone_config_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Deploy the rclone configuration
+  ansible.builtin.template:
+    src: rclone.conf.j2
+    dest: "{{ rclone_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: rclone_manage_config | bool
+
+- name: Create the rclone log directory
+  ansible.builtin.file:
+    path: "{{ rclone_log_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Configure rclone log rotation
+  ansible.builtin.template:
+    src: rclone-logrotate.j2
+    dest: /etc/logrotate.d/rclone-ansible
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install rclone job services and timers
+  ansible.builtin.include_tasks: job.yml
+  loop: "{{ rclone_jobs }}"
+  loop_control:
+    label: "{{ item.name }}"
+    loop_var: rclone_job
+  when: rclone_job.enabled | default(true) | bool
+
+- name: Apply systemd changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the rclone installation
+  ansible.builtin.command:
+    cmd: rclone version
+  register: rclone_version
+  changed_when: false
+  failed_when: "'rclone v' not in rclone_version.stdout"

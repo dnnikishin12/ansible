@@ -1,0 +1,28 @@
+---
+- name: Install the Elastic signing key
+  ansible.builtin.get_url:
+    url: "{{ elastic_stack_gpg_key_url }}"
+    dest: "{{ elastic_stack_gpg_key_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the Elastic apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by={{ elastic_stack_gpg_key_path }}]
+      {{ elastic_stack_repo_url }} stable main
+    filename: "elastic-{{ elastic_stack_version }}"
+    state: present
+    update_cache: true
+
+- name: Pin Elastic packages to the Elastic repository
+  ansible.builtin.copy:
+    content: |
+      Package: elasticsearch kibana logstash filebeat
+      Pin: origin artifacts.elastic.co
+      Pin-Priority: 1001
+    dest: /etc/apt/preferences.d/elastic
+    owner: root
+    group: root
+    mode: "0644"

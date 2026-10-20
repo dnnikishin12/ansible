@@ -1,0 +1,19 @@
+---
+valkey_conf_file: "/etc/valkey/valkey.conf"
+valkey_data_dir: "/var/lib/valkey"
+valkey_log_dir: "/var/log/valkey"
+valkey_run_dir: "/run/valkey"
+valkey_user: "valkey"
+valkey_group: "valkey"
+valkey_port: 6379
+valkey_bind_addresses:
+  - "127.0.0.1"
+valkey_password: "{{ vault_valkey_password | default('') }}"
+valkey_maxmemory: ""
+valkey_maxmemory_policy: "noeviction"
+valkey_appendonly: true
+valkey_appendfsync: "everysec"
+valkey_save_rules:
+  - "900 1"
+  - "300 10"
+  - "60 10000"

@@ -1,0 +1,48 @@
+---
+postgres_version: "18"
+postgres_cluster: "main"
+postgres_port: 5432
+postgres_conf_dir: "/etc/postgresql/{{ postgres_version }}/{{ postgres_cluster }}"
+postgres_data_dir: "/var/lib/postgresql/{{ postgres_version }}/{{ postgres_cluster }}"
+postgres_conf_file: "{{ postgres_conf_dir }}/postgresql.conf"
+postgres_hba_file: "{{ postgres_conf_dir }}/pg_hba.conf"
+postgres_listen_addresses: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+
+postgres_max_connections: 200
+postgres_shared_buffers: "{{ [128, (ansible_memtotal_mb * 0.25) | int] | max }}MB"
+postgres_effective_cache_size: "{{ [256, (ansible_memtotal_mb * 0.5) | int] | max }}MB"
+postgres_maintenance_work_mem: "256MB"
+postgres_work_mem: "8MB"
+postgres_wal_level: "replica"
+postgres_max_wal_senders: 10
+postgres_max_replication_slots: 10
+postgres_wal_keep_size: "2GB"
+# Protect an upstream from a disconnected downstream retaining WAL forever.
+postgres_max_slot_wal_keep_size: "10GB"
+postgres_password_encryption: "scram-sha-256"
+
+postgres_replication_user: "replicator"
+postgres_replication_password: "{{ vault_postgres_replication_password | default('') }}"
+postgres_replication_slot_prefix: "replica_"
+postgres_replica_rebuild: false
+
+# Replica -> upstream overrides. Replicas absent from the mapping connect
+# directly to the first host in postgres_primary. A cascading topology is
+# defined explicitly, for example: {pg02: pg01, pg03: pg02}.
+postgres_replication_topology: {}
+# Address that downstream replicas use to reach this host. Override it when
+# the inventory address is not reachable from another cloud.
+postgres_replication_address: "{{ ansible_host | default(ansible_default_ipv4.address | default('127.0.0.1')) }}"
+# Source CIDR that this host presents to its upstream. Override it when the
+# host is behind NAT and its egress address differs from its interface address.
+postgres_replication_source_cidr: "{{ (ansible_default_ipv4.address | default(ansible_host | default('127.0.0.1'))) ~ '/32' }}"
+
+postgres_client_networks: []
+postgres_users: []
+postgres_databases: []
+postgres_privileges: []
+
+postgres_backup_enabled: true
+postgres_backup_dir: "/var/backups/postgresql"
+postgres_backup_keep_days: 7
+postgres_backup_schedule: "*-*-* 01:30:00"

@@ -1,0 +1,7 @@
+---
+- name: Nginx reverse proxy and TLS termination
+  hosts: nginx
+  become: true
+  roles:
+    - role: nginx
+      tags: [nginx]

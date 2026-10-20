@@ -1,0 +1,18 @@
+---
+nginx_tls_enabled: true
+# selfsigned | custom
+nginx_tls_mode: "selfsigned"
+# For nginx_tls_mode=custom, provide controller-side paths:
+nginx_tls_cert_src: ""
+nginx_tls_key_src: ""
+
+nginx_gitlab_upstream: "{{ hostvars[groups['gitlab'][0]].ansible_host }}"
+nginx_gitlab_upstream_port: 80
+nginx_kibana_upstream: "{{ hostvars[groups['elk'][0]].ansible_host }}"
+nginx_kibana_upstream_port: 5601
+
+firewall_extra_rules:
+  - port: "80"
+    proto: "tcp"
+  - port: "443"
+    proto: "tcp"

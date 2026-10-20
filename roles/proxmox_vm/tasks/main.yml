@@ -1,0 +1,185 @@
+---
+- name: Validate Proxmox provisioning settings
+  ansible.builtin.assert:
+    that:
+      - proxmox_api_host | length > 0
+      - proxmox_api_user | length > 0
+      - proxmox_api_password | default('') | length > 0
+      - "'ChangeMe' not in (proxmox_api_password | default(''))"
+      - proxmox_node | length > 0
+      - proxmox_template | length > 0
+      - proxmox_gateway | length > 0
+      - proxmox_ssh_public_keys is not string
+      - proxmox_ssh_public_keys | length > 0
+      - proxmox_ssh_public_keys | join(' ') is not search('ReplaceMe')
+      - proxmox_vms | length > 0
+    fail_msg: >-
+      Fill provisioning/proxmox/vars.yml and the vault credentials before
+      running playbooks/proxmox-provision.yml.
+
+- name: Validate VM definitions
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.vmid is defined
+      - item.cores is defined
+      - item.memory is defined
+      - item.ip is defined
+    fail_msg: "Each VM requires name, vmid, cores, memory and ip."
+  loop: "{{ proxmox_vms }}"
+  loop_control:
+    label: "{{ item.name | default('undefined') }}"
+
+- name: Read existing virtual machines before cloning
+  community.proxmox.proxmox_vm_info:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_password: "{{ proxmox_api_password }}"
+    validate_certs: "{{ proxmox_validate_certs }}"
+    vmid: "{{ item.vmid }}"
+    type: qemu
+    config: current
+  loop: "{{ proxmox_vms }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: proxmox_existing_vms
+  changed_when: false
+
+# The proxmox_kvm clone operation only accepts clone-specific parameters.
+# Hardware and cloud-init settings are applied by the next task.
+- name: Clone missing virtual machines from the cloud-init template
+  community.proxmox.proxmox_kvm:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_password: "{{ proxmox_api_password }}"
+    validate_certs: "{{ proxmox_validate_certs }}"
+    clone: "{{ proxmox_template }}"
+    newid: "{{ item.vmid }}"
+    name: "{{ item.name }}"
+    node: "{{ proxmox_node }}"
+    storage: "{{ proxmox_storage }}"
+    full: true
+    format: "{{ proxmox_clone_format }}"
+    state: present
+    timeout: 600
+  loop: "{{ proxmox_vms }}"
+  loop_control:
+    label: "{{ item.name }}"
+    index_var: vm_index
+  when: proxmox_existing_vms.results[vm_index].proxmox_vms | length == 0
+
+- name: Configure hardware and cloud-init on newly cloned virtual machines
+  community.proxmox.proxmox_kvm:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_password: "{{ proxmox_api_password }}"
+    validate_certs: "{{ proxmox_validate_certs }}"
+    vmid: "{{ item.vmid }}"
+    name: "{{ item.name }}"
+    node: "{{ proxmox_node }}"
+    cores: "{{ item.cores }}"
+    sockets: "{{ item.sockets | default(1) }}"
+    memory: "{{ item.memory }}"
+    ostype: "l26"
+    agent: "1"
+    onboot: true
+    net:
+      net0: "virtio,bridge={{ proxmox_bridge }},firewall=1"
+    ipconfig:
+      ipconfig0: "ip={{ item.ip }},gw={{ proxmox_gateway }}"
+    nameservers: "{{ proxmox_nameservers }}"
+    searchdomains:
+      - "{{ proxmox_searchdomain }}"
+    ciuser: "{{ proxmox_ciuser }}"
+    sshkeys: "{{ proxmox_ssh_public_keys | join('\n') }}"
+    tags: "{{ item.tags | default([]) }}"
+    update: true
+    update_unsafe: true
+  loop: "{{ proxmox_vms }}"
+  loop_control:
+    label: "{{ item.name }}"
+    index_var: vm_index
+  when: proxmox_existing_vms.results[vm_index].proxmox_vms | length == 0
+
+- name: Ensure VM resources match the inventory
+  community.proxmox.proxmox_kvm:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_password: "{{ proxmox_api_password }}"
+    validate_certs: "{{ proxmox_validate_certs }}"
+    vmid: "{{ item.vmid }}"
+    name: "{{ item.name }}"
+    node: "{{ proxmox_node }}"
+    cores: "{{ item.cores }}"
+    sockets: "{{ item.sockets | default(1) }}"
+    memory: "{{ item.memory }}"
+    onboot: true
+    tags: "{{ item.tags | default([]) }}"
+    update: true
+  loop: "{{ proxmox_vms }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Read the current VM configuration
+  community.proxmox.proxmox_vm_info:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_password: "{{ proxmox_api_password }}"
+    validate_certs: "{{ proxmox_validate_certs }}"
+    vmid: "{{ item.vmid }}"
+    type: qemu
+    config: current
+  loop: "{{ proxmox_vms }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: proxmox_vm_info
+  changed_when: false
+
+- name: Grow the VM disk to the requested size
+  community.proxmox.proxmox_disk:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_password: "{{ proxmox_api_password }}"
+    validate_certs: "{{ proxmox_validate_certs }}"
+    vmid: "{{ item.vmid }}"
+    disk: "{{ proxmox_disk_interface }}"
+    size: "{{ item.disk }}G"
+    state: resized
+  loop: "{{ proxmox_vms }}"
+  loop_control:
+    label: "{{ item.name }}"
+    index_var: vm_index
+  when:
+    - item.disk is defined
+    - item.resize_disk | default(true) | bool
+    - proxmox_vm_info.results[vm_index].proxmox_vms | length > 0
+    - >-
+      (proxmox_vm_info.results[vm_index].proxmox_vms[0].config[proxmox_disk_interface]
+      | default('') | regex_findall('size=([0-9.]+)G') | first | default('0', true) | float)
+      < (item.disk | float)
+
+- name: Start the virtual machines
+  community.proxmox.proxmox_kvm:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_password: "{{ proxmox_api_password }}"
+    validate_certs: "{{ proxmox_validate_certs }}"
+    vmid: "{{ item.vmid }}"
+    node: "{{ proxmox_node }}"
+    state: started
+  loop: "{{ proxmox_vms }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Wait for SSH on the new virtual machines
+  ansible.builtin.wait_for:
+    host: "{{ item.ip | regex_replace('/.*$', '') }}"
+    port: 22
+    delay: 10
+    timeout: 600
+  loop: "{{ proxmox_vms }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - item.ip is defined
+    - item.wait_for_ssh | default(true) | bool

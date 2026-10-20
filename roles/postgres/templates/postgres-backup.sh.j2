@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Managed by Ansible
+set -euo pipefail
+umask 077
+
+backup_dir="{{ postgres_backup_dir }}"
+stamp="$(date +%Y%m%d-%H%M%S)"
+
+install -d -m 0700 "$backup_dir"
+sudo -u postgres pg_dumpall --clean --if-exists | gzip > "${backup_dir}/postgresql-${stamp}.sql.gz"
+
+find "$backup_dir" -type f -name 'postgresql-*.sql.gz' -mtime +{{ postgres_backup_keep_days }} -delete

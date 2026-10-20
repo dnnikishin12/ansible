@@ -1,0 +1,7 @@
+---
+- name: Maintenance host (rclone backup jobs)
+  hosts: maintenance
+  become: true
+  roles:
+    - role: maintenance
+      tags: [maintenance, rclone]

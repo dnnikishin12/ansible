@@ -1,0 +1,10 @@
+---
+# pg01 belongs to both postgres_primary and valkey groups. Keeping firewall
+# rules here avoids one group overriding the other.
+firewall_extra_rules:
+  - port: "5432"
+    proto: "tcp"
+    from: "{{ internal_network }}"
+  - port: "6379"
+    proto: "tcp"
+    from: "{{ internal_network }}"

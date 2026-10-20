@@ -1,0 +1,18 @@
+---
+proxmox_api_host: ""
+proxmox_api_user: ""
+proxmox_api_password: ""
+proxmox_validate_certs: true
+
+proxmox_node: ""
+proxmox_template: ""
+proxmox_storage: "local-lvm"
+proxmox_clone_format: "unspecified"
+proxmox_disk_interface: "virtio0"
+proxmox_bridge: "vmbr0"
+proxmox_gateway: ""
+proxmox_nameservers: []
+proxmox_searchdomain: ""
+proxmox_ciuser: "ubuntu"
+proxmox_ssh_public_keys: []
+proxmox_vms: []

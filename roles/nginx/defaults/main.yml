@@ -1,0 +1,28 @@
+---
+nginx_tls_enabled: true
+nginx_tls_mode: "selfsigned"
+nginx_tls_dir: "/etc/nginx/tls"
+nginx_tls_cert_path: "{{ nginx_tls_dir }}/server.crt"
+nginx_tls_key_path: "{{ nginx_tls_dir }}/server.key"
+nginx_tls_csr_path: "{{ nginx_tls_dir }}/server.csr"
+nginx_tls_common_name: "{{ internal_domain | default('localhost') }}"
+nginx_tls_san:
+  - "DNS:{{ gitlab_hostname | default('gitlab.local') }}"
+  - "DNS:{{ kibana_hostname | default('kibana.local') }}"
+  - "DNS:{{ internal_domain | default('local') }}"
+nginx_tls_cert_src: ""
+nginx_tls_key_src: ""
+nginx_client_max_body_size: "0"
+
+nginx_gitlab_upstream: "127.0.0.1"
+nginx_gitlab_upstream_port: 80
+nginx_kibana_upstream: "127.0.0.1"
+nginx_kibana_upstream_port: 5601
+
+nginx_sites:
+  - name: gitlab
+    template: gitlab.conf.j2
+    enabled: "{{ 'gitlab' in groups and groups['gitlab'] | length > 0 }}"
+  - name: kibana
+    template: kibana.conf.j2
+    enabled: "{{ 'elk' in groups and groups['elk'] | length > 0 }}"

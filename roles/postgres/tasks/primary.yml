@@ -1,0 +1,57 @@
+---
+- name: Create the replication user
+  community.postgresql.postgresql_user:
+    name: "{{ postgres_replication_user }}"
+    password: "{{ postgres_replication_password }}"
+    role_attr_flags: "REPLICATION,LOGIN"
+    state: present
+    login_user: postgres
+    login_unix_socket: /var/run/postgresql
+  become: true
+  become_user: postgres
+  no_log: true
+
+- name: Create application users
+  community.postgresql.postgresql_user:
+    name: "{{ item.name }}"
+    password: "{{ item.password | default(omit) }}"
+    role_attr_flags: "{{ item.role_attr_flags | default('LOGIN') }}"
+    state: present
+    login_user: postgres
+    login_unix_socket: /var/run/postgresql
+  loop: "{{ postgres_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+  become_user: postgres
+  no_log: true
+
+- name: Create application databases
+  community.postgresql.postgresql_db:
+    name: "{{ item.name }}"
+    owner: "{{ item.owner | default('postgres') }}"
+    encoding: "{{ item.encoding | default('UTF-8') }}"
+    state: present
+    login_user: postgres
+    login_unix_socket: /var/run/postgresql
+  loop: "{{ postgres_databases }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+  become_user: postgres
+
+- name: Grant database privileges
+  community.postgresql.postgresql_privs:
+    db: "{{ item.db }}"
+    role: "{{ item.role }}"
+    privs: "{{ item.privs }}"
+    type: "{{ item.type | default('database') }}"
+    objs: "{{ item.objs | default(omit) }}"
+    state: present
+    login_user: postgres
+    login_unix_socket: /var/run/postgresql
+  loop: "{{ postgres_privileges }}"
+  loop_control:
+    label: "{{ item.role }} on {{ item.db }}"
+  become: true
+  become_user: postgres

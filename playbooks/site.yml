@@ -1,0 +1,26 @@
+---
+# Full stack. Run bootstrap first on a fresh set of VMs, or simply run site.yml:
+# it imports bootstrap as the first play.
+- name: Bootstrap every VM
+  ansible.builtin.import_playbook: bootstrap.yml
+
+- name: Configure PostgreSQL and Valkey
+  ansible.builtin.import_playbook: postgres.yml
+
+- name: Configure GitLab
+  ansible.builtin.import_playbook: gitlab.yml
+
+- name: Configure Docker hosts
+  ansible.builtin.import_playbook: docker.yml
+
+- name: Configure the Elastic Stack
+  ansible.builtin.import_playbook: elk.yml
+
+- name: Configure Filebeat log shipping
+  ansible.builtin.import_playbook: filebeat.yml
+
+- name: Configure the nginx reverse proxy
+  ansible.builtin.import_playbook: nginx.yml
+
+- name: Configure the maintenance host
+  ansible.builtin.import_playbook: maintenance.yml

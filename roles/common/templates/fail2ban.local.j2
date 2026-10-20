@@ -1,0 +1,11 @@
+# Managed by Ansible
+[DEFAULT]
+bantime = {{ common_fail2ban_bantime }}
+findtime = {{ common_fail2ban_findtime }}
+maxretry = {{ common_fail2ban_maxretry }}
+backend = systemd
+ignoreip = 127.0.0.1/8 ::1 {{ common_fail2ban_ignoreips | join(' ') }}
+
+[sshd]
+enabled = true
+port = {{ common_ssh_port }}

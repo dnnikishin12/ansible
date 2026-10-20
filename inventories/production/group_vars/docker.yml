@@ -1,0 +1,7 @@
+---
+docker_log_max_size: "100m"
+docker_log_max_file: "5"
+docker_live_restore: true
+docker_prune_enabled: true
+docker_prune_schedule: "Sun *-*-* 04:00:00"
+docker_apps_dir: "/srv/docker"

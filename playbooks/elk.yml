@@ -1,0 +1,7 @@
+---
+- name: Elasticsearch, Logstash and Kibana
+  hosts: elk
+  become: true
+  roles:
+    - role: elk
+      tags: [elk, logging]

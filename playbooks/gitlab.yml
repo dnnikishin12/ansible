@@ -1,0 +1,7 @@
+---
+- name: GitLab CE
+  hosts: gitlab
+  become: true
+  roles:
+    - role: gitlab
+      tags: [gitlab]

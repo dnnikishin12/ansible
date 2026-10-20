@@ -1,0 +1,16 @@
+---
+profile: production
+
+exclude_paths:
+  - .cache/
+  - .venv/
+  - inventories/production/group_vars/all/vault.yml
+  - provisioning/proxmox/vault.yml
+
+skip_list:
+  # Service variables are intentionally named after the product (postgres_*,
+  # elasticsearch_*), not after the role directory.
+  - var-naming[no-role-prefix]
+  # The repository is used directly from GitLab, not published to Galaxy.
+  - galaxy[no-changelog]
+  - galaxy[no-readme]

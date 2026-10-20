@@ -1,0 +1,33 @@
+---
+- name: Validate rclone job settings
+  ansible.builtin.assert:
+    that:
+      - rclone_job.name is defined
+      - rclone_job.source is defined
+      - rclone_job.destination is defined
+    fail_msg: "Each rclone job requires name, source and destination."
+
+- name: Install the rclone job service
+  ansible.builtin.template:
+    src: rclone-job.service.j2
+    dest: "/etc/systemd/system/rclone-{{ rclone_job.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Install the rclone job timer
+  ansible.builtin.template:
+    src: rclone-job.timer.j2
+    dest: "/etc/systemd/system/rclone-{{ rclone_job.name }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Enable the rclone job timer
+  ansible.builtin.systemd:
+    name: "rclone-{{ rclone_job.name }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: true

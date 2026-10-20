@@ -1,0 +1,16 @@
+---
+# This task runs on the primary and on intermediate standbys. A cascading
+# standby needs its own physical slot for every direct downstream replica.
+- name: Create physical replication slots for downstream replicas
+  community.postgresql.postgresql_slot:
+    name: "{{ postgres_replication_slot_prefix }}{{ item | replace('-', '_') }}"
+    slot_type: physical
+    state: present
+    login_db: postgres
+    login_user: postgres
+    login_unix_socket: /var/run/postgresql
+  loop: "{{ postgres_downstream_replicas }}"
+  loop_control:
+    label: "{{ item }}"
+  become: true
+  become_user: postgres

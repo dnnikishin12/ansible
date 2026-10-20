@@ -1,0 +1,9 @@
+---
+- name: Base configuration for all VMs
+  hosts: all
+  become: true
+  serial: 5
+  any_errors_fatal: true
+  roles:
+    - role: common
+      tags: [common, bootstrap]

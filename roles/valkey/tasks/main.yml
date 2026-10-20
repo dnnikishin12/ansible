@@ -1,0 +1,65 @@
+---
+- name: Validate the Valkey password
+  ansible.builtin.assert:
+    that:
+      - valkey_password | default('') | length >= 12
+      - "'ChangeMe' not in (valkey_password | default(''))"
+    fail_msg: >-
+      Set a real vault_valkey_password in the encrypted vault
+      (at least 12 characters, not the ChangeMe placeholder).
+  no_log: true
+
+- name: Install Valkey
+  ansible.builtin.apt:
+    name:
+      - valkey-server
+      - valkey-tools
+    state: present
+
+- name: Ensure Valkey data, log and runtime directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ valkey_user }}"
+    group: "{{ valkey_group }}"
+    mode: "0750"
+  loop:
+    - "{{ valkey_data_dir }}"
+    - "{{ valkey_log_dir }}"
+    - "{{ valkey_run_dir }}"
+
+- name: Deploy the Valkey configuration
+  ansible.builtin.template:
+    src: valkey.conf.j2
+    dest: "{{ valkey_conf_file }}"
+    owner: root
+    group: "{{ valkey_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart Valkey
+
+- name: Apply pending Valkey configuration changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the Valkey port
+  ansible.builtin.wait_for:
+    host: "127.0.0.1"
+    port: "{{ valkey_port }}"
+    timeout: 30
+
+- name: Verify Valkey authentication
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/valkey-cli
+      - "-h"
+      - "127.0.0.1"
+      - "-p"
+      - "{{ valkey_port }}"
+      - "-a"
+      - "{{ valkey_password }}"
+      - "--no-auth-warning"
+      - "PING"
+  register: valkey_ping
+  changed_when: false
+  failed_when: "'PONG' not in valkey_ping.stdout"
+  no_log: true

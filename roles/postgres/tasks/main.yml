@@ -1,0 +1,39 @@
+---
+- name: Validate the PostgreSQL replication password
+  ansible.builtin.assert:
+    that:
+      - postgres_replication_password | default('') | length >= 16
+      - "'ChangeMe' not in (postgres_replication_password | default(''))"
+    fail_msg: >-
+      Set a real vault_postgres_replication_password in the encrypted vault
+      (at least 16 characters, not the ChangeMe placeholder).
+  no_log: true
+
+- name: Build and validate the replication topology
+  ansible.builtin.import_tasks: topology.yml
+
+- name: Install PostgreSQL packages
+  ansible.builtin.import_tasks: install.yml
+
+- name: Configure PostgreSQL
+  ansible.builtin.import_tasks: configure.yml
+
+- name: Configure the primary
+  ansible.builtin.import_tasks: primary.yml
+  when: inventory_hostname in groups['postgres_primary'] | default([])
+
+- name: Configure a streaming replica
+  ansible.builtin.import_tasks: replica.yml
+  when: inventory_hostname in groups['postgres_replicas'] | default([])
+
+# Run after replica.yml: bootstrapping a replica wipes its data directory and
+# therefore any downstream slots that were created before pg_basebackup.
+- name: Configure replication slots for downstream replicas
+  ansible.builtin.import_tasks: slots.yml
+  when: postgres_downstream_replicas | length > 0
+
+- name: Configure local logical backups
+  ansible.builtin.import_tasks: backup.yml
+  when:
+    - inventory_hostname in groups['postgres_primary'] | default([])
+    - postgres_backup_enabled | bool

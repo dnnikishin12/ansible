@@ -1,0 +1,340 @@
+---
+- name: Validate the Elastic Stack passwords
+  ansible.builtin.assert:
+    that:
+      - elastic_password | default('') | length >= 12
+      - kibana_system_password | default('') | length >= 12
+      - logstash_internal_password | default('') | length >= 12
+      - "'ChangeMe' not in ((elastic_password | default(''))
+        ~ (kibana_system_password | default(''))
+        ~ (logstash_internal_password | default('')))"
+    fail_msg: >-
+      Set real vault_elastic_password, vault_kibana_system_password and
+      vault_logstash_internal_password in the encrypted vault (at least
+      12 characters, not the ChangeMe placeholder).
+  no_log: true
+  when: elasticsearch_security_enabled | bool
+
+- name: Install the Elastic Stack
+  ansible.builtin.apt:
+    name:
+      - elasticsearch
+      - kibana
+      - logstash
+    state: present
+    update_cache: true
+
+- name: Create the Elasticsearch JVM options directory
+  ansible.builtin.file:
+    path: /etc/elasticsearch/jvm.options.d
+    state: directory
+    owner: root
+    group: elasticsearch
+    mode: "0750"
+
+- name: Configure the Elasticsearch JVM heap
+  ansible.builtin.copy:
+    content: |
+      -Xms{{ elasticsearch_heap_size }}
+      -Xmx{{ elasticsearch_heap_size }}
+    dest: /etc/elasticsearch/jvm.options.d/heap.options
+    owner: root
+    group: elasticsearch
+    mode: "0640"
+  notify: Restart Elasticsearch
+
+- name: Deploy elasticsearch.yml
+  ansible.builtin.template:
+    src: elasticsearch.yml.j2
+    dest: /etc/elasticsearch/elasticsearch.yml
+    owner: root
+    group: elasticsearch
+    mode: "0660"
+  notify: Restart Elasticsearch
+
+- name: Create the Elasticsearch systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/elasticsearch.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure Elasticsearch systemd limits
+  ansible.builtin.copy:
+    content: |
+      [Service]
+      LimitMEMLOCK=infinity
+      LimitNOFILE=65535
+      LimitNPROC=4096
+    dest: /etc/systemd/system/elasticsearch.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart Elasticsearch
+
+- name: Create the Kibana configuration directory
+  ansible.builtin.file:
+    path: /etc/kibana
+    state: directory
+    owner: root
+    group: kibana
+    mode: "0750"
+
+- name: Deploy kibana.yml
+  ansible.builtin.template:
+    src: kibana.yml.j2
+    dest: /etc/kibana/kibana.yml
+    owner: root
+    group: kibana
+    mode: "0660"
+  no_log: true
+  notify: Restart Kibana
+
+- name: Deploy logstash.yml
+  ansible.builtin.template:
+    src: logstash.yml.j2
+    dest: /etc/logstash/logstash.yml
+    owner: root
+    group: logstash
+    mode: "0640"
+  notify: Restart Logstash
+
+- name: Create the Logstash JVM options directory
+  ansible.builtin.file:
+    path: /etc/logstash/jvm.options.d
+    state: directory
+    owner: root
+    group: logstash
+    mode: "0750"
+
+- name: Configure the Logstash JVM heap
+  ansible.builtin.copy:
+    content: |
+      -Xms{{ logstash_heap_size }}
+      -Xmx{{ logstash_heap_size }}
+    dest: /etc/logstash/jvm.options.d/heap.options
+    owner: root
+    group: logstash
+    mode: "0640"
+  notify: Restart Logstash
+
+- name: Deploy the Logstash pipeline
+  ansible.builtin.template:
+    src: beats.conf.j2
+    dest: /etc/logstash/conf.d/10-beats.conf
+    owner: root
+    group: logstash
+    mode: "0640"
+  no_log: true
+  notify: Restart Logstash
+
+- name: Apply Elastic Stack configuration changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the Elasticsearch API
+  ansible.builtin.uri:
+    url: "http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}"
+    status_code: [200, 401]
+  register: elasticsearch_ping
+  until: elasticsearch_ping.status | default(0) in [200, 401]
+  retries: "{{ elasticsearch_health_retries }}"
+  delay: "{{ elasticsearch_health_delay }}"
+  changed_when: false
+  failed_when: elasticsearch_ping.status | default(0) not in [200, 401]
+
+- name: Check the elastic superuser credentials
+  ansible.builtin.uri:
+    url: "http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}"
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: true
+    status_code: [200, 401]
+  register: elasticsearch_auth
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Generate a temporary elastic superuser password
+  ansible.builtin.command:
+    argv:
+      - /usr/share/elasticsearch/bin/elasticsearch-reset-password
+      - "-u"
+      - "elastic"
+      - "-b"
+  when: elasticsearch_auth.status | default(0) != 200
+  register: elastic_password_reset
+  until: elastic_password_reset.rc | default(1) == 0
+  retries: 12
+  delay: 5
+  changed_when: true
+  no_log: true
+
+- name: Extract the temporary elastic superuser password
+  ansible.builtin.set_fact:
+    es_temp_password: >-
+      {{ elastic_password_reset.stdout | regex_search('New password: (\\S+)', '\\1')
+      | default('', true) }}
+  when: elasticsearch_auth.status | default(0) != 200
+  failed_when: es_temp_password | length == 0
+  no_log: true
+
+- name: Set the elastic superuser password
+  ansible.builtin.uri:
+    url: "http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}/_security/user/elastic/_password"
+    method: POST
+    user: elastic
+    password: "{{ es_temp_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      password: "{{ elastic_password }}"
+    status_code: 200
+  when: elasticsearch_auth.status | default(0) != 200
+  changed_when: true
+  no_log: true
+
+- name: Wait for authenticated Elasticsearch access
+  ansible.builtin.uri:
+    url: "http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}/_cluster/health"
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: elasticsearch_health
+  until: elasticsearch_health.status | default(0) == 200
+  retries: "{{ elasticsearch_health_retries }}"
+  delay: "{{ elasticsearch_health_delay }}"
+  changed_when: false
+  failed_when: elasticsearch_health.status | default(0) != 200
+  no_log: true
+
+- name: Check the kibana_system credentials
+  ansible.builtin.uri:
+    url: "http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}/_security/_authenticate"
+    user: kibana_system
+    password: "{{ kibana_system_password }}"
+    force_basic_auth: true
+    status_code: [200, 401]
+  register: kibana_system_auth
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: elasticsearch_security_enabled | bool
+
+- name: Set the kibana_system password
+  ansible.builtin.uri:
+    url: "http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}/_security/user/kibana_system/_password"
+    method: POST
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      password: "{{ kibana_system_password }}"
+    status_code: 200
+  when: elasticsearch_security_enabled | bool and (kibana_system_auth.status | default(0)) != 200
+  changed_when: true
+  no_log: true
+  notify: Restart Kibana
+
+- name: Create the Logstash writer role
+  ansible.builtin.uri:
+    url: "http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}/_security/role/logstash_writer"
+    method: POST
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      cluster:
+        - monitor
+        - manage_index_templates
+        - manage_ilm
+        - manage_pipeline
+      indices:
+        - names:
+            - "filebeat-*"
+            - "logstash-*"
+            - "logs-*"
+          privileges:
+            - create_index
+            - write
+            - create
+            - manage
+            - read
+    status_code: 200
+  changed_when: false
+  no_log: true
+  when: elasticsearch_security_enabled | bool
+
+- name: Check the logstash_internal credentials
+  ansible.builtin.uri:
+    url: "http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}/_security/_authenticate"
+    user: logstash_internal
+    password: "{{ logstash_internal_password }}"
+    force_basic_auth: true
+    status_code: [200, 401]
+  register: logstash_internal_auth
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: elasticsearch_security_enabled | bool
+
+- name: Create the Logstash writer user
+  ansible.builtin.uri:
+    url: "http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}/_security/user/logstash_internal"
+    method: POST
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      password: "{{ logstash_internal_password }}"
+      roles:
+        - logstash_writer
+      full_name: "Logstash internal writer"
+    status_code: 200
+  when: elasticsearch_security_enabled | bool and (logstash_internal_auth.status | default(0)) != 200
+  changed_when: true
+  no_log: true
+  notify: Restart Logstash
+
+- name: Ensure the Logstash user has the writer role
+  ansible.builtin.uri:
+    url: "http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}/_security/user/logstash_internal"
+    method: POST
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      roles:
+        - logstash_writer
+    status_code: 200
+  changed_when: false
+  no_log: true
+  when: elasticsearch_security_enabled | bool
+
+- name: Apply credential changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for Kibana
+  ansible.builtin.uri:
+    url: "http://{{ kibana_host }}:{{ kibana_port }}/api/status"
+    status_code: [200, 401]
+  register: kibana_status
+  until: kibana_status.status | default(0) in [200, 401]
+  retries: 60
+  delay: 10
+  changed_when: false
+  failed_when: kibana_status.status | default(0) not in [200, 401]
+
+- name: Wait for the Logstash beats input
+  ansible.builtin.wait_for:
+    host: "{{ ansible_default_ipv4.address }}"
+    port: "{{ logstash_beats_port }}"
+    timeout: 120
+    delay: 5

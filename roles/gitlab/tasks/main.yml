@@ -1,0 +1,118 @@
+---
+- name: Validate the GitLab root password
+  ansible.builtin.assert:
+    that:
+      - gitlab_initial_root_password | default('') | length >= 12
+      - "'ChangeMe' not in (gitlab_initial_root_password | default(''))"
+    fail_msg: >-
+      Set a real vault_gitlab_root_password in the encrypted vault
+      (at least 12 characters, not the ChangeMe placeholder).
+  no_log: true
+
+- name: Validate GitLab SMTP settings
+  ansible.builtin.assert:
+    that:
+      - gitlab_smtp_address | default('') | length > 0
+      - gitlab_smtp_from | default('') | length > 0
+      - >-
+        (gitlab_smtp_authentication | default('') | length == 0)
+        or (gitlab_smtp_password | default('') | length > 0)
+      - >-
+        (gitlab_smtp_authentication | default('') | length == 0)
+        or ('ChangeMe' not in (gitlab_smtp_password | default('')))
+    fail_msg: >-
+      gitlab_smtp_enabled=true requires gitlab_smtp_address,
+      gitlab_smtp_from and, when authentication is used, a real
+      vault_gitlab_smtp_password.
+  when: gitlab_smtp_enabled | bool
+  no_log: true
+
+- name: Install GitLab repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - openssh-server
+      - perl
+      - tzdata
+    state: present
+
+- name: Download the GitLab repository setup script
+  ansible.builtin.get_url:
+    url: "https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh"
+    dest: /tmp/gitlab-repo-setup.sh
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Add the GitLab repository
+  ansible.builtin.command:
+    cmd: /bin/bash /tmp/gitlab-repo-setup.sh
+    creates: /etc/apt/sources.list.d/gitlab_gitlab-ce.list
+
+- name: Install GitLab CE
+  ansible.builtin.apt:
+    name: "{{ gitlab_package }}"
+    state: present
+    update_cache: true
+
+- name: Deploy gitlab.rb
+  ansible.builtin.template:
+    src: gitlab.rb.j2
+    dest: /etc/gitlab/gitlab.rb
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Reconfigure GitLab
+
+- name: Apply GitLab configuration
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for GitLab to become healthy
+  ansible.builtin.uri:
+    url: "{{ gitlab_health_url }}"
+    status_code: 200
+    validate_certs: false
+  register: gitlab_health
+  until: gitlab_health.status | default(0) == 200
+  retries: "{{ gitlab_health_retries }}"
+  delay: "{{ gitlab_health_delay }}"
+  changed_when: false
+  failed_when: gitlab_health.status | default(0) != 200
+
+- name: Configure GitLab backups
+  when: gitlab_backup_enabled | bool
+  block:
+    - name: Install the GitLab backup script
+      ansible.builtin.template:
+        src: gitlab-backup.sh.j2
+        dest: /usr/local/sbin/gitlab-backup.sh
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Install the GitLab backup service
+      ansible.builtin.template:
+        src: gitlab-backup.service.j2
+        dest: /etc/systemd/system/gitlab-backup.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Install the GitLab backup timer
+      ansible.builtin.template:
+        src: gitlab-backup.timer.j2
+        dest: /etc/systemd/system/gitlab-backup.timer
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Enable the GitLab backup timer
+      ansible.builtin.systemd:
+        name: gitlab-backup.timer
+        enabled: true
+        state: started
+        daemon_reload: true

@@ -1,0 +1,105 @@
+---
+# ---------------------------------------------------------------------------
+# Global settings
+# ---------------------------------------------------------------------------
+internal_domain: "campbox.tech"
+internal_network: "10.10.10.0/24"
+environment_name: "production"
+
+gitlab_hostname: "gitlab.{{ internal_domain }}"
+kibana_hostname: "kibana.{{ internal_domain }}"
+
+ansible_user: "ubuntu"
+ansible_python_interpreter: "/usr/bin/python3"
+# New VMs are provisioned with a fresh host key. This trusts it on first
+# contact while still protecting against later key changes.
+ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+
+# ---------------------------------------------------------------------------
+# Base OS (common role)
+# ---------------------------------------------------------------------------
+common_timezone: "Europe/Moscow"
+common_manage_hostname: true
+
+common_packages:
+  - acl
+  - apt-transport-https
+  - ca-certificates
+  - chrony
+  - curl
+  - fail2ban
+  - gnupg
+  - htop
+  - jq
+  - logrotate
+  - python3-systemd
+  - qemu-guest-agent
+  - rsync
+  - rsyslog
+  - sudo
+  - tmux
+  - ufw
+  - unattended-upgrades
+  - vim
+
+common_admin_user: "deploy"
+common_admin_group: "deploy"
+common_admin_shell: "/bin/bash"
+common_admin_sudo_nopasswd: true
+common_admin_extra_groups: []
+# Populated from the encrypted vault. Never commit real keys.
+common_admin_authorized_keys: "{{ vault_admin_authorized_keys | default([]) }}"
+
+common_ssh_port: 22
+common_ssh_service: "ssh"
+common_ssh_hardening: true
+common_ssh_password_authentication: false
+common_ssh_permit_root_login: "prohibit-password"
+common_ssh_max_auth_tries: 4
+common_ssh_client_alive_interval: 300
+common_ssh_client_alive_count_max: 2
+
+common_ntp_servers:
+  - "0.pool.ntp.org"
+  - "1.pool.ntp.org"
+  - "2.pool.ntp.org"
+  - "3.pool.ntp.org"
+
+common_journald_system_max_use: "1G"
+common_journald_runtime_max_use: "256M"
+common_journald_max_retention: "30day"
+common_nofile_limit: 65535
+
+common_unattended_upgrades_enabled: true
+common_unattended_upgrades_reboot: false
+
+common_fail2ban_enabled: true
+common_fail2ban_bantime: "1h"
+common_fail2ban_findtime: "10m"
+common_fail2ban_maxretry: 5
+common_fail2ban_ignoreips:
+  - "{{ internal_network }}"
+
+common_firewall_enabled: true
+common_firewall_default_incoming: "deny"
+common_firewall_default_outgoing: "allow"
+# Restrict SSH to the management network. Add your own admin CIDR here!
+common_firewall_ssh_sources:
+  - "{{ internal_network }}"
+common_firewall_rules: []
+
+common_sysctl:
+  vm.swappiness: 10
+  fs.file-max: 2097152
+  net.core.somaxconn: 4096
+  net.ipv4.tcp_syncookies: 1
+  net.ipv4.conf.all.rp_filter: 1
+  net.ipv4.conf.default.rp_filter: 1
+common_sysctl_extra: {}
+
+# ---------------------------------------------------------------------------
+# Cross-service defaults
+# ---------------------------------------------------------------------------
+# Default retention for locally produced backups. The maintenance VM can copy
+# them to object storage using the rclone role.
+local_backup_keep_days: 7

@@ -1,0 +1,22 @@
+---
+elasticsearch_cluster_name: "tlcamp-logs"
+elasticsearch_node_name: "{{ inventory_hostname }}"
+elasticsearch_heap_size: "{{ [(ansible_memtotal_mb * 0.5) | int, 31744] | min }}m"
+elasticsearch_http_host: "127.0.0.1"
+elasticsearch_http_port: 9200
+elasticsearch_security_enabled: true
+
+kibana_host: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+kibana_port: 5601
+kibana_public_base_url: "https://kibana.local"
+
+logstash_heap_size: "1g"
+logstash_beats_port: 5044
+logstash_http_host: "127.0.0.1"
+logstash_http_port: 9600
+
+elastic_password: "{{ vault_elastic_password | default('') }}"
+kibana_system_password: "{{ vault_kibana_system_password | default('') }}"
+logstash_internal_password: "{{ vault_logstash_internal_password | default('') }}"
+elasticsearch_health_retries: 90
+elasticsearch_health_delay: 5

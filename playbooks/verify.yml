@@ -1,0 +1,117 @@
+---
+# Post-deployment smoke checks. Run after site.yml:
+#   ansible-playbook playbooks/verify.yml
+- name: Verify connectivity and baseline services
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Wait for the SSH connection
+      ansible.builtin.wait_for_connection:
+        timeout: 30
+
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Define the services expected on this host
+      ansible.builtin.set_fact:
+        verify_services: "{{ ['ssh.service']
+          + (['postgresql@' ~ postgres_version ~ '-main.service']
+             if inventory_hostname in (groups['postgres'] | default([])) else [])
+          + (['valkey-server.service']
+             if inventory_hostname in (groups['valkey'] | default([])) else [])
+          + (['docker.service']
+             if inventory_hostname in (groups['docker'] | default([])) else [])
+          + (['gitlab-runsvdir.service']
+             if inventory_hostname in (groups['gitlab'] | default([])) else [])
+          + (['elasticsearch.service', 'kibana.service', 'logstash.service']
+             if inventory_hostname in (groups['elk'] | default([])) else [])
+          + (['nginx.service']
+             if inventory_hostname in (groups['nginx'] | default([])) else [])
+          + (['filebeat.service']
+             if inventory_hostname in (groups['log_shippers'] | default([])) else []) }}"
+
+    - name: Check that expected services are running
+      ansible.builtin.assert:
+        that:
+          - item in ansible_facts.services
+          - ansible_facts.services[item].state == 'running'
+        fail_msg: "Service {{ item }} is not running on {{ inventory_hostname }}"
+        success_msg: "Service {{ item }} is running"
+      loop: "{{ verify_services }}"
+      loop_control:
+        label: "{{ item }}"
+
+- name: Verify PostgreSQL streaming replication topology
+  hosts: postgres
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Import the PostgreSQL replication topology facts
+      ansible.builtin.import_tasks: ../roles/postgres/tasks/topology.yml
+
+    - name: Count streaming downstream replicas
+      community.postgresql.postgresql_query:
+        query: >-
+          SELECT count(*) AS replicas
+          FROM pg_stat_replication
+          WHERE state = 'streaming'
+        login_user: postgres
+        login_unix_socket: /var/run/postgresql
+      become: true
+      become_user: postgres
+      register: postgres_replication
+      changed_when: false
+      failed_when: >-
+        (postgres_replication.query_result[0].replicas | int) !=
+        (postgres_downstream_replicas | length)
+
+    - name: Verify that a replica is running in recovery
+      community.postgresql.postgresql_query:
+        query: "SELECT pg_is_in_recovery() AS in_recovery"
+        login_user: postgres
+        login_unix_socket: /var/run/postgresql
+      become: true
+      become_user: postgres
+      register: postgres_recovery
+      changed_when: false
+      failed_when: not (postgres_recovery.query_result[0].in_recovery | bool)
+      when: inventory_hostname in groups['postgres_replicas'] | default([])
+
+    - name: Verify that a replica's WAL receiver is streaming
+      community.postgresql.postgresql_query:
+        query: "SELECT status FROM pg_stat_wal_receiver"
+        login_user: postgres
+        login_unix_socket: /var/run/postgresql
+      become: true
+      become_user: postgres
+      register: postgres_wal_receiver
+      changed_when: false
+      failed_when: >-
+        postgres_wal_receiver.query_result | length == 0
+        or postgres_wal_receiver.query_result[0].status != 'streaming'
+      when: inventory_hostname in groups['postgres_replicas'] | default([])
+
+- name: Verify reverse proxy upstreams
+  hosts: nginx
+  gather_facts: false
+  tasks:
+    - name: Check GitLab through the nginx upstream
+      ansible.builtin.uri:
+        url: "http://{{ nginx_gitlab_upstream }}:{{ nginx_gitlab_upstream_port }}/-/health"
+        status_code: 200
+      register: gitlab_upstream_health
+      until: gitlab_upstream_health.status | default(0) == 200
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    - name: Check Kibana through the nginx upstream
+      ansible.builtin.uri:
+        url: "http://{{ nginx_kibana_upstream }}:{{ nginx_kibana_upstream_port }}/api/status"
+        status_code: [200, 401]
+      register: kibana_upstream_health
+      until: kibana_upstream_health.status | default(0) in [200, 401]
+      retries: 30
+      delay: 5
+      changed_when: false

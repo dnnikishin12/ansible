@@ -1,0 +1,26 @@
+input {
+  beats {
+    host => "0.0.0.0"
+    port => {{ logstash_beats_port }}
+  }
+}
+
+filter {
+  if [service] == "nginx" {
+    grok {
+      match => { "message" => "%{COMBINEDAPACHELOG}" }
+      tag_on_failure => ["_grokparsefailure"]
+    }
+  }
+}
+
+output {
+  elasticsearch {
+    hosts => ["http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}"]
+{% if elasticsearch_security_enabled | bool %}
+    user => "logstash_internal"
+    password => {{ logstash_internal_password | to_json }}
+{% endif %}
+    index => "%{[@metadata][beat]}-%{[@metadata][version]}-%{+YYYY.MM.dd}"
+  }
+}

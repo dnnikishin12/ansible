@@ -1,0 +1,17 @@
+---
+# pg03 is in another cloud and is not provisioned by Proxmox.
+# Replace this placeholder with the real address. It is not used as an
+# upstream today, but keeps the topology explicit for future replicas.
+postgres_replication_address: "203.0.113.14"
+
+# The actual source CIDR that pg02 sees is defined in
+# group_vars/postgres_cascading.yml. Override it here if the NAT egress differs
+# from the management address:
+# postgres_replication_source_cidr: "203.0.113.14/32"
+
+# SSH/Ansible access from the second cloud is defined in
+# group_vars/postgres_cascading.yml. Replace that placeholder before bootstrap.
+
+# To rebuild only pg03, uncomment the next line and run:
+#   ansible-playbook playbooks/postgres.yml --limit pg02,pg03 --ask-vault-pass
+# postgres_replica_rebuild: true

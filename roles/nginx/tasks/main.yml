@@ -1,0 +1,163 @@
+---
+- name: Install nginx and TLS dependencies
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - openssl
+      - python3-cryptography
+    state: present
+
+- name: Create the nginx TLS directory
+  ansible.builtin.file:
+    path: "{{ nginx_tls_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: nginx_tls_enabled | bool
+
+- name: Create the ACME webroot
+  ansible.builtin.file:
+    path: /var/www/html
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+
+- name: Generate a self-signed TLS private key
+  community.crypto.openssl_privatekey:
+    path: "{{ nginx_tls_key_path }}"
+    size: 4096
+    type: RSA
+    mode: "0600"
+  when:
+    - nginx_tls_enabled | bool
+    - nginx_tls_mode == "selfsigned"
+
+- name: Generate a self-signed TLS certificate signing request
+  community.crypto.openssl_csr:
+    path: "{{ nginx_tls_csr_path }}"
+    privatekey_path: "{{ nginx_tls_key_path }}"
+    common_name: "{{ nginx_tls_common_name }}"
+    subject_alt_name: "{{ nginx_tls_san }}"
+    mode: "0600"
+  when:
+    - nginx_tls_enabled | bool
+    - nginx_tls_mode == "selfsigned"
+
+- name: Generate a self-signed TLS certificate
+  community.crypto.x509_certificate:
+    path: "{{ nginx_tls_cert_path }}"
+    csr_path: "{{ nginx_tls_csr_path }}"
+    privatekey_path: "{{ nginx_tls_key_path }}"
+    provider: selfsigned
+    selfsigned_not_after: "+825d"
+    mode: "0644"
+  when:
+    - nginx_tls_enabled | bool
+    - nginx_tls_mode == "selfsigned"
+
+- name: Validate custom certificate settings
+  ansible.builtin.assert:
+    that:
+      - nginx_tls_cert_src | length > 0
+      - nginx_tls_key_src | length > 0
+    fail_msg: >-
+      nginx_tls_mode=custom requires nginx_tls_cert_src and nginx_tls_key_src
+      to point to readable files on the controller.
+  when:
+    - nginx_tls_enabled | bool
+    - nginx_tls_mode == "custom"
+
+- name: Install a custom TLS certificate
+  ansible.builtin.copy:
+    src: "{{ nginx_tls_cert_src }}"
+    dest: "{{ nginx_tls_cert_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - nginx_tls_enabled | bool
+    - nginx_tls_mode == "custom"
+
+- name: Install a custom TLS private key
+  ansible.builtin.copy:
+    src: "{{ nginx_tls_key_src }}"
+    dest: "{{ nginx_tls_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when:
+    - nginx_tls_enabled | bool
+    - nginx_tls_mode == "custom"
+
+- name: Reject unsupported TLS modes
+  ansible.builtin.assert:
+    that:
+      - nginx_tls_mode in ['selfsigned', 'custom']
+    fail_msg: "nginx_tls_mode must be either 'selfsigned' or 'custom'."
+  when: nginx_tls_enabled | bool
+
+- name: Deploy the main nginx configuration
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx
+
+- name: Remove the default nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+
+- name: Deploy enabled virtual hosts
+  ansible.builtin.template:
+    src: "{{ item.template }}"
+    dest: "/etc/nginx/sites-available/{{ item.name }}.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ nginx_sites }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.enabled | bool
+  notify: Reload nginx
+
+- name: Enable virtual hosts
+  ansible.builtin.file:
+    src: "/etc/nginx/sites-available/{{ item.name }}.conf"
+    dest: "/etc/nginx/sites-enabled/{{ item.name }}.conf"
+    state: link
+    force: true
+  loop: "{{ nginx_sites }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.enabled | bool
+  notify: Reload nginx
+
+- name: Disable unused virtual hosts
+  ansible.builtin.file:
+    path: "/etc/nginx/sites-enabled/{{ item.name }}.conf"
+    state: absent
+  loop: "{{ nginx_sites }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: not (item.enabled | bool)
+  notify: Reload nginx
+
+- name: Validate the nginx configuration
+  ansible.builtin.command:
+    cmd: nginx -t
+  changed_when: false
+
+- name: Ensure nginx is enabled
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Apply nginx configuration changes
+  ansible.builtin.meta: flush_handlers

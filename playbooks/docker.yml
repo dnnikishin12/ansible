@@ -1,0 +1,16 @@
+---
+- name: Docker hosts in production
+  hosts: docker_prod
+  become: true
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: docker
+      tags: [docker, docker_prod]
+
+- name: Docker host in test
+  hosts: docker_test
+  become: true
+  roles:
+    - role: docker
+      tags: [docker, docker_test]

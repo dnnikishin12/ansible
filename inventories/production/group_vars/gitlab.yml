@@ -1,0 +1,29 @@
+---
+gitlab_external_url: "https://{{ gitlab_hostname }}"
+gitlab_behind_proxy: true
+gitlab_nginx_listen_port: 80
+gitlab_nginx_listen_https: false
+gitlab_trusted_proxies:
+  - "{{ hostvars[groups['nginx'][0]].ansible_host }}"
+gitlab_initial_root_password: "{{ vault_gitlab_root_password | default('') }}"
+gitlab_time_zone: "{{ common_timezone }}"
+
+gitlab_smtp_enabled: false
+gitlab_smtp_address: ""
+gitlab_smtp_port: 587
+gitlab_smtp_user_name: ""
+gitlab_smtp_password: "{{ vault_gitlab_smtp_password | default('') }}"
+gitlab_smtp_domain: "{{ internal_domain }}"
+gitlab_smtp_authentication: "login"
+gitlab_smtp_enable_starttls_auto: true
+gitlab_smtp_tls: false
+gitlab_smtp_from: "gitlab@{{ internal_domain }}"
+
+gitlab_backup_enabled: true
+gitlab_backup_keep_days: "{{ local_backup_keep_days }}"
+gitlab_backup_schedule: "*-*-* 02:30:00"
+
+firewall_extra_rules:
+  - port: "80"
+    proto: "tcp"
+    from: "{{ hostvars[groups['nginx'][0]].ansible_host }}"

@@ -1,0 +1,53 @@
+# Managed by Ansible
+upstream gitlab_backend {
+    server {{ nginx_gitlab_upstream }}:{{ nginx_gitlab_upstream_port }};
+    keepalive 32;
+}
+
+{% if nginx_tls_enabled | bool %}
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ gitlab_hostname }};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+{% endif %}
+
+server {
+{% if nginx_tls_enabled | bool %}
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    ssl_certificate {{ nginx_tls_cert_path }};
+    ssl_certificate_key {{ nginx_tls_key_path }};
+{% else %}
+    listen 80;
+    listen [::]:80;
+{% endif %}
+    server_name {{ gitlab_hostname }};
+
+    access_log /var/log/nginx/gitlab.access.log;
+    error_log /var/log/nginx/gitlab.error.log;
+
+    location / {
+        proxy_pass http://gitlab_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Ssl {{ 'on' if nginx_tls_enabled | bool else 'off' }};
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 300;
+        proxy_connect_timeout 30;
+        proxy_send_timeout 300;
+        proxy_buffering off;
+    }
+}

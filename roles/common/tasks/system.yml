@@ -1,0 +1,86 @@
+---
+- name: Set system timezone
+  community.general.timezone:
+    name: "{{ common_timezone }}"
+
+- name: Set hostname from the inventory
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+    use: systemd
+  when: common_manage_hostname | bool
+
+- name: Add cluster hosts to /etc/hosts
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED CLUSTER HOSTS"
+    block: |
+      {% for host in groups['all'] | sort %}
+      {{ hostvars[host].ansible_host | default(host) }} {{ host }} {{ host }}.{{ internal_domain | default('local') }}
+      {% endfor %}
+
+- name: Apply kernel parameters
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-ansible.conf
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ (common_sysctl | combine(common_sysctl_extra, recursive=True)) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Configure file descriptor limits
+  ansible.builtin.template:
+    src: limits.conf.j2
+    dest: /etc/security/limits.d/99-ansible.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure journald retention
+  ansible.builtin.template:
+    src: journald.conf.j2
+    dest: /etc/systemd/journald.conf.d/99-ansible.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart systemd-journald
+
+- name: Disable systemd-timesyncd
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    state: stopped
+    enabled: false
+  failed_when: false
+
+- name: Create chrony log directory
+  ansible.builtin.file:
+    path: /var/log/chrony
+    state: directory
+    owner: _chrony
+    group: _chrony
+    mode: "0750"
+
+- name: Configure chrony
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart chrony
+
+- name: Ensure chrony is enabled
+  ansible.builtin.service:
+    name: chrony
+    state: started
+    enabled: true

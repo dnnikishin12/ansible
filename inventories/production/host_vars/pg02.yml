@@ -1,0 +1,20 @@
+---
+# pg02 is the first-level standby and the upstream for pg03 in another cloud.
+# Set this to the address that pg03 can reach: a public IP, NAT address or VPN
+# address. The default would be the private inventory address.
+postgres_replication_address: "203.0.113.13"
+
+# Listen on all interfaces so that a public/NAT address can reach pg02. UFW
+# and pg_hba still restrict :5432 to the internal network and pg03 only.
+postgres_listen_addresses: "0.0.0.0"
+
+# This host-level list replaces firewall_extra_rules from
+# group_vars/postgres_replicas.yml, so repeat the internal rule and add pg03.
+# UFW uses the source CIDR that pg02 sees, not pg03's management address.
+firewall_extra_rules:
+  - port: "5432"
+    proto: "tcp"
+    from: "{{ internal_network }}"
+  - port: "5432"
+    proto: "tcp"
+    from: "{{ hostvars['pg03'].postgres_replication_source_cidr | default('203.0.113.14/32') }}"

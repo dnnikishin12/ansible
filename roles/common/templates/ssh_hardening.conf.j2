@@ -1,0 +1,14 @@
+# Managed by Ansible
+Port {{ common_ssh_port }}
+PermitRootLogin {{ common_ssh_permit_root_login }}
+PubkeyAuthentication yes
+PasswordAuthentication {{ 'yes' if common_ssh_password_authentication | bool else 'no' }}
+KbdInteractiveAuthentication no
+UsePAM yes
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding yes
+MaxAuthTries {{ common_ssh_max_auth_tries }}
+ClientAliveInterval {{ common_ssh_client_alive_interval }}
+ClientAliveCountMax {{ common_ssh_client_alive_count_max }}
+LoginGraceTime 30

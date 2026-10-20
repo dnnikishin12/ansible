@@ -1,0 +1,14 @@
+# Managed by Ansible
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+local   all             postgres                                peer
+local   all             all                                     peer
+host    all             all             127.0.0.1/32            scram-sha-256
+host    all             all             ::1/128                 scram-sha-256
+
+{% for network in postgres_client_networks %}
+host    all             all             {{ network }}           scram-sha-256
+{% endfor %}
+
+{% for replica in postgres_downstream_replicas | default([]) %}
+host    replication     {{ postgres_replication_user }}  {{ hostvars[replica].postgres_replication_source_cidr | default((hostvars[replica].ansible_host | default(replica)) ~ '/32', true) }}  scram-sha-256
+{% endfor %}

@@ -1,0 +1,18 @@
+---
+elasticsearch_cluster_name: "tlcamp-logs"
+elasticsearch_heap_size: "{{ [(ansible_memtotal_mb * 0.5) | int, 31744] | min }}m"
+kibana_public_base_url: "https://{{ kibana_hostname }}"
+logstash_beats_port: 5044
+logstash_heap_size: "1g"
+
+common_sysctl_extra:
+  vm.max_map_count: 262144
+  fs.file-max: 2097152
+
+firewall_extra_rules:
+  - port: "5601"
+    proto: "tcp"
+    from: "{{ hostvars[groups['nginx'][0]].ansible_host }}"
+  - port: "5044"
+    proto: "tcp"
+    from: "{{ internal_network }}"

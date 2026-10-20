@@ -1,0 +1,39 @@
+---
+# Copy this file and encrypt it:
+#
+#   cp inventories/production/group_vars/all/vault.yml.example \
+#      inventories/production/group_vars/all/vault.yml
+#   $EDITOR inventories/production/group_vars/all/vault.yml
+#   ansible-vault encrypt inventories/production/group_vars/all/vault.yml
+#
+# Never commit the unencrypted file. All values below are placeholders.
+
+# SSH public keys allowed to log in as common_admin_user.
+vault_admin_authorized_keys:
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceMeWithYourPublicKey ansible@example"
+
+# GitLab initial root password (change it after the first login).
+vault_gitlab_root_password: "ChangeMe-GitLab-Root-Password"
+
+# Optional GitLab SMTP password. Leave the example value if SMTP is disabled.
+vault_gitlab_smtp_password: "ChangeMe-GitLab-SMTP-Password"
+
+# PostgreSQL replication and application credentials.
+vault_postgres_replication_password: "ChangeMe-Postgres-Replication"
+vault_postgres_app_password: "ChangeMe-Postgres-App"
+
+# Valkey requirepass value.
+vault_valkey_password: "ChangeMe-Valkey-Password"
+
+# Elastic Stack credentials.
+vault_elastic_password: "ChangeMe-Elastic-Superuser"
+vault_kibana_system_password: "ChangeMe-Kibana-System"
+vault_logstash_internal_password: "ChangeMe-Logstash-Internal"
+
+# rclone / S3-compatible backup target.
+vault_rclone_s3_endpoint: "https://s3.example.com"
+vault_rclone_s3_access_key_id: "ChangeMe-Access-Key"
+vault_rclone_s3_secret_access_key: "ChangeMe-Secret-Key"
+
+# Optional: Proxmox API credentials for playbooks/proxmox-provision.yml.
+vault_proxmox_api_password: "ChangeMe-Proxmox-Password"

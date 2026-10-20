@@ -1,0 +1,37 @@
+# Managed by Ansible
+bind {{ valkey_bind_addresses | join(' ') }}
+protected-mode yes
+port {{ valkey_port }}
+tcp-backlog 511
+timeout 0
+tcp-keepalive 300
+
+daemonize no
+supervised systemd
+pidfile {{ valkey_run_dir }}/valkey-server.pid
+loglevel notice
+logfile {{ valkey_log_dir }}/valkey-server.log
+databases 16
+
+{% for rule in valkey_save_rules %}
+save {{ rule }}
+{% endfor %}
+stop-writes-on-bgsave-error yes
+rdbcompression yes
+rdbchecksum yes
+dbfilename dump.rdb
+dir {{ valkey_data_dir }}
+
+appendonly {{ 'yes' if valkey_appendonly | bool else 'no' }}
+appendfilename "appendonly.aof"
+appendfsync {{ valkey_appendfsync }}
+no-appendfsync-on-rewrite no
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+
+{% if valkey_maxmemory | length > 0 %}
+maxmemory {{ valkey_maxmemory }}
+maxmemory-policy {{ valkey_maxmemory_policy }}
+{% endif %}
+
+requirepass {{ valkey_password | to_json }}

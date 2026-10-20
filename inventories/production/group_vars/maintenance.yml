@@ -1,0 +1,19 @@
+---
+rclone_manage_config: true
+rclone_remote_name: "backup"
+rclone_remote_type: "s3"
+rclone_s3_provider: "Other"
+rclone_s3_endpoint: "{{ vault_rclone_s3_endpoint | default('') }}"
+rclone_s3_region: "us-east-1"
+rclone_s3_access_key_id: "{{ vault_rclone_s3_access_key_id | default('') }}"
+rclone_s3_secret_access_key: "{{ vault_rclone_s3_secret_access_key | default('') }}"
+
+# Each job becomes a systemd service + timer. Example:
+#
+# rclone_jobs:
+#   - name: gitlab-backups
+#     source: /mnt/backups/gitlab/
+#     destination: backups/gitlab/
+#     mode: copy
+#     schedule: "*-*-* 03:30:00"
+rclone_jobs: []

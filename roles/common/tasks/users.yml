@@ -1,0 +1,54 @@
+---
+- name: Validate that an administrative SSH key is configured
+  ansible.builtin.assert:
+    that:
+      - common_admin_authorized_keys is not string
+      - common_admin_authorized_keys | length > 0
+      - common_admin_authorized_keys | join(' ') is not search('ReplaceMe')
+    fail_msg: >-
+      common_admin_authorized_keys is empty or still contains the example key.
+      Add at least one real public key to vault_admin_authorized_keys in the
+      encrypted vault before bootstrapping.
+  when:
+    - common_manage_admin_user | bool
+    - common_ssh_hardening | bool
+
+- name: Create administrative group
+  ansible.builtin.group:
+    name: "{{ common_admin_group }}"
+    state: present
+  when: common_manage_admin_user | bool
+
+- name: Create administrative user
+  ansible.builtin.user:
+    name: "{{ common_admin_user }}"
+    group: "{{ common_admin_group }}"
+    groups: "{{ ['sudo'] + common_admin_extra_groups }}"
+    append: true
+    shell: "{{ common_admin_shell }}"
+    create_home: true
+    password: "!"
+    update_password: on_create
+    state: present
+  when: common_manage_admin_user | bool
+
+- name: Install administrative SSH keys
+  ansible.posix.authorized_key:
+    user: "{{ common_admin_user }}"
+    key: "{{ item }}"
+    state: present
+    exclusive: false
+  loop: "{{ common_admin_authorized_keys }}"
+  loop_control:
+    label: "key #{{ ansible_loop.index }}"
+  when: common_manage_admin_user | bool
+
+- name: Configure passwordless sudo for the administrative user
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: "/etc/sudoers.d/90-{{ common_admin_user }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "/usr/sbin/visudo -cf %s"
+  when: common_manage_admin_user | bool

@@ -1,0 +1,26 @@
+---
+- name: Install Filebeat
+  ansible.builtin.apt:
+    name: filebeat
+    state: present
+    update_cache: true
+
+- name: Deploy filebeat.yml
+  ansible.builtin.template:
+    src: filebeat.yml.j2
+    dest: /etc/filebeat/filebeat.yml
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart Filebeat
+
+- name: Validate the Filebeat configuration
+  ansible.builtin.command:
+    cmd: filebeat test config -c /etc/filebeat/filebeat.yml
+  changed_when: false
+
+- name: Ensure Filebeat is enabled
+  ansible.builtin.service:
+    name: filebeat
+    state: started
+    enabled: true

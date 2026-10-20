@@ -1,0 +1,10 @@
+---
+valkey_port: 6379
+valkey_password: "{{ vault_valkey_password | default('') }}"
+valkey_bind_addresses:
+  - "127.0.0.1"
+  - "{{ ansible_default_ipv4.address }}"
+valkey_maxmemory: ""
+valkey_maxmemory_policy: "noeviction"
+valkey_appendonly: true
+valkey_appendfsync: "everysec"

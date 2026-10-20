@@ -1,0 +1,84 @@
+---
+- name: Configure SSH hardening
+  when: common_ssh_hardening | bool
+  block:
+    - name: Create sshd drop-in directory
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Deploy SSH hardening drop-in
+      ansible.builtin.template:
+        src: ssh_hardening.conf.j2
+        dest: /etc/ssh/sshd_config.d/00-ansible-hardening.conf
+        owner: root
+        group: root
+        mode: "0644"
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Reload sshd
+
+    - name: Validate the complete sshd configuration
+      ansible.builtin.command:
+        cmd: /usr/sbin/sshd -t
+      changed_when: false
+
+- name: Configure fail2ban
+  when: common_fail2ban_enabled | bool
+  block:
+    - name: Deploy fail2ban jail configuration
+      ansible.builtin.template:
+        src: fail2ban.local.j2
+        dest: /etc/fail2ban/jail.d/99-ansible.local
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart fail2ban
+
+    - name: Ensure fail2ban is enabled
+      ansible.builtin.service:
+        name: fail2ban
+        state: started
+        enabled: true
+
+- name: Configure UFW
+  when: common_firewall_enabled | bool
+  block:
+    - name: Configure default firewall policies
+      community.general.ufw:
+        direction: "{{ item.direction }}"
+        default: "{{ item.policy }}"
+      loop:
+        - direction: incoming
+          policy: "{{ common_firewall_default_incoming }}"
+        - direction: outgoing
+          policy: "{{ common_firewall_default_outgoing }}"
+      loop_control:
+        label: "{{ item.direction }} -> {{ item.policy }}"
+
+    - name: Allow SSH from management networks
+      community.general.ufw:
+        rule: allow
+        port: "{{ common_ssh_port }}"
+        proto: tcp
+        from_ip: "{{ item }}"
+      loop: "{{ common_firewall_ssh_sources }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Allow service ports
+      community.general.ufw:
+        rule: allow
+        port: "{{ item.port }}"
+        proto: "{{ item.proto | default('tcp') }}"
+        from_ip: "{{ item.from | default(omit) }}"
+      loop: "{{ common_firewall_rules + (firewall_extra_rules | default([])) }}"
+      loop_control:
+        label: "{{ item.port }}/{{ item.proto | default('tcp') }}"
+
+    - name: Enable UFW
+      community.general.ufw:
+        state: enabled
+        logging: low

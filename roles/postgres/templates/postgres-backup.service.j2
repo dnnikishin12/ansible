@@ -1,0 +1,11 @@
+[Unit]
+Description=PostgreSQL logical backup (pg_dumpall)
+Documentation=man:pg_dumpall(1)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/postgres-backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

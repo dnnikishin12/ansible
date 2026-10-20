@@ -1,0 +1,31 @@
+---
+- name: Install the PostgreSQL signing key
+  ansible.builtin.get_url:
+    url: "https://www.postgresql.org/media/keys/ACCC4CF8.asc"
+    dest: /usr/share/keyrings/postgresql-archive-keyring.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the PGDG apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.asc]
+      https://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main
+    filename: pgdg
+    state: present
+    update_cache: true
+
+- name: Install PostgreSQL server and client
+  ansible.builtin.apt:
+    name:
+      - "postgresql-{{ postgres_version }}"
+      - "postgresql-client-{{ postgres_version }}"
+      - python3-psycopg2
+    state: present
+
+- name: Ensure PostgreSQL is enabled
+  ansible.builtin.service:
+    name: postgresql
+    state: started
+    enabled: true

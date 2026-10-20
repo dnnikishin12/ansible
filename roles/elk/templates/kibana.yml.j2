@@ -1,0 +1,12 @@
+# Managed by Ansible
+server.port: {{ kibana_port }}
+server.host: "{{ kibana_host }}"
+server.name: "{{ inventory_hostname }}"
+server.publicBaseUrl: "{{ kibana_public_base_url }}"
+elasticsearch.hosts: ["http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}"]
+{% if elasticsearch_security_enabled | bool %}
+elasticsearch.username: "kibana_system"
+elasticsearch.password: {{ kibana_system_password | to_json }}
+{% endif %}
+monitoring.ui.container.elasticsearch.enabled: false
+i18n.locale: "en"

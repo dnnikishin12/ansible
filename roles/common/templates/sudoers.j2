@@ -1,0 +1,6 @@
+# Managed by Ansible
+{% if common_admin_sudo_nopasswd | bool %}
+{{ common_admin_user }} ALL=(ALL) NOPASSWD: ALL
+{% else %}
+{{ common_admin_user }} ALL=(ALL) ALL
+{% endif %}

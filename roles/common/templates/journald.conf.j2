@@ -1,0 +1,6 @@
+[Journal]
+SystemMaxUse={{ common_journald_system_max_use }}
+RuntimeMaxUse={{ common_journald_runtime_max_use }}
+MaxRetentionSec={{ common_journald_max_retention }}
+# Filebeat reads /var/log/syslog, so keep journald forwarding to rsyslog.
+ForwardToSyslog=yes

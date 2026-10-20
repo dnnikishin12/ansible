@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: maintenance
+  author: TLCamp Infrastructure
+  description: rclone with S3-compatible remote and systemd backup timers
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies: []

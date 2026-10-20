@@ -1,0 +1,32 @@
+---
+postgres_version: "18"
+postgres_port: 5432
+postgres_client_networks:
+  - "{{ internal_network }}"
+
+# pg01 -> pg02 -> pg03. pg03 is in another cloud and must not connect to pg01
+# directly. Slots are created on each direct upstream: replica_pg02 on pg01 and
+# replica_pg03 on pg02. Replicas absent from this map connect directly to the
+# primary, which preserves the default non-cascading topology.
+postgres_replication_topology:
+  pg02: pg01
+  pg03: pg02
+
+# Application databases/users are intentionally empty by default. Add entries
+# here once the application schema is known, for example:
+#
+# postgres_users:
+#   - name: app
+#     password: "{{ vault_postgres_app_password }}"
+#     role_attr_flags: "LOGIN"
+# postgres_databases:
+#   - name: app
+#     owner: app
+#     encoding: "UTF-8"
+postgres_users: []
+postgres_databases: []
+postgres_privileges: []
+
+postgres_backup_enabled: true
+postgres_backup_keep_days: "{{ local_backup_keep_days }}"
+postgres_backup_schedule: "*-*-* 01:30:00"

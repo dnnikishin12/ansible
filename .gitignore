@@ -1,0 +1,22 @@
+# Ansible
+.cache/
+.venv/
+*.retry
+*.log
+collections/
+.ansible/
+
+# Secrets
+.vault_pass
+vault.yml
+inventories/production/group_vars/all/vault.yml
+provisioning/proxmox/vault.yml
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Editors
+.idea/
+.vscode/
+*.swp

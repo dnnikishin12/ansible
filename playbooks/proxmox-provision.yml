@@ -1,0 +1,12 @@
+---
+- name: Provision virtual machines in Proxmox VE
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../inventories/production/group_vars/all/vault.yml
+    - ../provisioning/proxmox/vars.yml
+  roles:
+    - role: proxmox_vm
+      tags: [provision, proxmox]

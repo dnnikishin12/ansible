@@ -1,0 +1,41 @@
+---
+- name: Ensure the PostgreSQL backup directory exists
+  ansible.builtin.file:
+    path: "{{ postgres_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the PostgreSQL backup script
+  ansible.builtin.template:
+    src: postgres-backup.sh.j2
+    dest: /usr/local/sbin/postgres-backup.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the PostgreSQL backup service
+  ansible.builtin.template:
+    src: postgres-backup.service.j2
+    dest: /etc/systemd/system/postgres-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Install the PostgreSQL backup timer
+  ansible.builtin.template:
+    src: postgres-backup.timer.j2
+    dest: /etc/systemd/system/postgres-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Enable the PostgreSQL backup timer
+  ansible.builtin.systemd:
+    name: postgres-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true

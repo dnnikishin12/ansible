@@ -1,0 +1,10 @@
+[Unit]
+Description=Timer for rclone job {{ rclone_job.name }}
+
+[Timer]
+OnCalendar={{ rclone_job.schedule | default('*-*-* 03:00:00') }}
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

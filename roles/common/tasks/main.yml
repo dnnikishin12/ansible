@@ -1,0 +1,12 @@
+---
+- name: Install baseline packages
+  ansible.builtin.import_tasks: packages.yml
+
+- name: Configure operating system settings
+  ansible.builtin.import_tasks: system.yml
+
+- name: Configure administrators
+  ansible.builtin.import_tasks: users.yml
+
+- name: Harden SSH, firewall and fail2ban
+  ansible.builtin.import_tasks: security.yml

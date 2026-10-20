@@ -1,0 +1,108 @@
+---
+- name: Create the apt keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the Docker signing key
+  ansible.builtin.get_url:
+    url: "https://download.docker.com/linux/ubuntu/gpg"
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the Docker apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ docker_apt_arch }} signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+    filename: docker
+    state: present
+    update_cache: true
+
+- name: Install Docker Engine
+  ansible.builtin.apt:
+    name: "{{ docker_packages }}"
+    state: present
+
+- name: Create the Docker configuration directory
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure the Docker daemon
+  ansible.builtin.copy:
+    content: "{{ docker_daemon_config | to_nice_json }}\n"
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Docker
+
+- name: Ensure the Docker service is enabled
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Create the application directory
+  ansible.builtin.file:
+    path: "{{ docker_apps_dir }}"
+    state: directory
+    owner: root
+    group: docker
+    mode: "0750"
+
+- name: Add administrators to the docker group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop: "{{ docker_users }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Apply pending Docker configuration changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the Docker daemon
+  ansible.builtin.command:
+    cmd: docker info
+  register: docker_info
+  changed_when: false
+  failed_when: "'Server Version' not in docker_info.stdout"
+
+- name: Configure weekly Docker image and build cache pruning
+  when: docker_prune_enabled | bool
+  block:
+    - name: Install the Docker prune service
+      ansible.builtin.template:
+        src: docker-prune.service.j2
+        dest: /etc/systemd/system/docker-prune.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Install the Docker prune timer
+      ansible.builtin.template:
+        src: docker-prune.timer.j2
+        dest: /etc/systemd/system/docker-prune.timer
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Enable the Docker prune timer
+      ansible.builtin.systemd:
+        name: docker-prune.timer
+        enabled: true
+        state: started
+        daemon_reload: true

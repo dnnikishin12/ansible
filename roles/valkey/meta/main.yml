@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: valkey
+  author: TLCamp Infrastructure
+  description: Valkey cache with authentication, AOF and systemd integration
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies: []

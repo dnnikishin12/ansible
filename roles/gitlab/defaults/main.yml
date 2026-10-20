@@ -1,0 +1,34 @@
+---
+gitlab_package: "gitlab-ce"
+gitlab_external_url: "https://gitlab.local"
+gitlab_behind_proxy: true
+gitlab_nginx_listen_port: 80
+gitlab_nginx_listen_https: false
+gitlab_trusted_proxies: []
+gitlab_initial_root_password: "{{ vault_gitlab_root_password | default('') }}"
+gitlab_time_zone: "UTC"
+gitlab_shell_ssh_port: 22
+
+gitlab_letsencrypt_enable: false
+gitlab_letsencrypt_contact_emails: []
+
+gitlab_smtp_enabled: false
+gitlab_smtp_address: ""
+gitlab_smtp_port: 587
+gitlab_smtp_user_name: ""
+gitlab_smtp_password: ""
+gitlab_smtp_domain: ""
+gitlab_smtp_authentication: "login"
+gitlab_smtp_enable_starttls_auto: true
+gitlab_smtp_tls: false
+gitlab_smtp_from: "gitlab@localhost"
+
+gitlab_prometheus_enabled: true
+gitlab_health_url: "http://127.0.0.1:{{ gitlab_nginx_listen_port }}/-/health"
+gitlab_health_retries: 90
+gitlab_health_delay: 10
+
+gitlab_backup_enabled: true
+gitlab_backup_dir: "/var/opt/gitlab/backups"
+gitlab_backup_keep_days: 7
+gitlab_backup_schedule: "*-*-* 02:30:00"

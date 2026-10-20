@@ -1,0 +1,10 @@
+1. ВМ Gitlab 
+2. ВМ posgres + valkey 
+3. ВМ posgres реплика 
+4. ВМ posgres реплика 
+5. ВМ прод docker
+6. ВМ прод docker
+7. ВМ тест 6cpu-8Gb-128SSD docker
+8. ВМ ELK 
+9. ВМ nginx 
+10. ВМ Maintenance rclone

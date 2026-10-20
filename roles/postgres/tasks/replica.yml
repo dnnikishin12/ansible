@@ -1,0 +1,233 @@
+---
+- name: Check whether the replica data directory is initialized
+  ansible.builtin.stat:
+    path: "{{ postgres_data_dir }}/PG_VERSION"
+  register: postgres_replica_data
+
+- name: Check whether the replica is already in standby mode
+  ansible.builtin.stat:
+    path: "{{ postgres_data_dir }}/standby.signal"
+  register: postgres_replica_standby
+
+- name: Check whether the data directory already contains replication settings
+  ansible.builtin.command:
+    cmd: >-
+      grep -qE '^[[:space:]]*primary_conninfo[[:space:]]*='
+      "{{ postgres_data_dir }}/postgresql.auto.conf"
+      "{{ postgres_conf_file }}"
+  register: postgres_replica_conninfo
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: postgres_replica_data.stat.exists
+
+# A missing standby.signal on an existing data directory can mean that the
+# replica was promoted or damaged. Do not overwrite it implicitly: require the
+# operator to set postgres_replica_rebuild=true.
+- name: Protect an existing non-standby data directory
+  ansible.builtin.assert:
+    that:
+      - postgres_replica_rebuild | bool
+    fail_msg: >-
+      {{ postgres_data_dir }} exists but is not in standby mode
+      (standby.signal is missing). If this is a promoted replica, preserve its
+      data. If it must be rebuilt from its upstream, set
+      postgres_replica_rebuild: true explicitly.
+  when:
+    - postgres_replica_data.stat.exists
+    - not postgres_replica_standby.stat.exists
+    - not postgres_replica_rebuild | bool
+    - postgres_replica_conninfo.rc | default(1) == 0
+
+# A package installation already creates an empty default cluster without
+# standby.signal. Treat it as a fresh replica. An existing non-standby cluster
+# with primary_conninfo is handled by the guard above and is never wiped
+# without an explicit rebuild.
+- name: Decide whether a base backup is required
+  ansible.builtin.set_fact:
+    postgres_replica_needs_bootstrap: >-
+      {{
+        (not postgres_replica_data.stat.exists)
+        or (postgres_replica_rebuild | bool)
+        or (
+          postgres_replica_data.stat.exists
+          and not postgres_replica_standby.stat.exists
+          and (postgres_replica_conninfo.rc | default(1)) != 0
+        )
+      }}
+
+- name: Define replication connection settings
+  ansible.builtin.set_fact:
+    postgres_upstream_host: >-
+      {{ hostvars[postgres_upstream].postgres_replication_address
+         | default(hostvars[postgres_upstream].ansible_host, true) }}
+    postgres_replication_slot: "{{ postgres_replication_slot_prefix }}{{ inventory_hostname | replace('-', '_') }}"
+    postgres_replication_conninfo: >-
+      host={{ postgres_upstream_host }}
+      port={{ postgres_port }}
+      user={{ postgres_replication_user }}
+      application_name={{ inventory_hostname }}
+      passfile=/var/lib/postgresql/.pgpass
+
+# The role does not silently rewrite an existing standby: switching a replica
+# to another upstream without a base backup can leave it ahead of the new
+# upstream. Fail early and require an explicit rebuild instead.
+- name: Verify the configured upstream on an existing replica
+  when:
+    - postgres_replica_data.stat.exists
+    - not postgres_replica_needs_bootstrap | bool
+  block:
+    - name: Read the effective primary_conninfo
+      community.postgresql.postgresql_query:
+        query: "SHOW primary_conninfo"
+        login_user: postgres
+        login_unix_socket: /var/run/postgresql
+      become: true
+      become_user: postgres
+      register: postgres_existing_conninfo
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Read the effective primary_slot_name
+      community.postgresql.postgresql_query:
+        query: "SHOW primary_slot_name"
+        login_user: postgres
+        login_unix_socket: /var/run/postgresql
+      become: true
+      become_user: postgres
+      register: postgres_existing_slot
+      changed_when: false
+      failed_when: false
+
+    - name: Assert that the existing replica uses the configured topology
+      ansible.builtin.assert:
+        that:
+          - postgres_existing_conninfo is succeeded
+          - postgres_existing_slot is succeeded
+          - >-
+            ('host=' ~ postgres_upstream_host ~ ' ')
+            in (((postgres_existing_conninfo.query_result | default([{}]))[0].primary_conninfo
+                 | default('')) ~ ' ')
+          - >-
+            ((postgres_existing_slot.query_result | default([{}]))[0].primary_slot_name
+             | default('')) == postgres_replication_slot
+        fail_msg: >-
+          The existing replica does not use upstream {{ postgres_upstream }} and
+          slot {{ postgres_replication_slot }}. Set postgres_replica_rebuild:
+          true to rebuild it from the configured upstream, or update
+          primary_conninfo/primary_slot_name manually and restart PostgreSQL.
+
+- name: Deploy the replication password file
+  ansible.builtin.template:
+    src: pgpass.j2
+    dest: /var/lib/postgresql/.pgpass
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  no_log: true
+
+- name: Build the replica from its upstream
+  when: postgres_replica_needs_bootstrap | bool
+  block:
+    - name: Stop PostgreSQL before rebuilding the replica
+      ansible.builtin.service:
+        name: postgresql
+        state: stopped
+
+    - name: Remove the old replica data directory
+      ansible.builtin.file:
+        path: "{{ postgres_data_dir }}"
+        state: absent
+
+    - name: Create an empty replica data directory
+      ansible.builtin.file:
+        path: "{{ postgres_data_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+
+    - name: Run pg_basebackup from the upstream
+      ansible.builtin.command:
+        argv:
+          - "/usr/lib/postgresql/{{ postgres_version }}/bin/pg_basebackup"
+          - "-h"
+          - "{{ postgres_upstream_host }}"
+          - "-p"
+          - "{{ postgres_port }}"
+          - "-U"
+          - "{{ postgres_replication_user }}"
+          - "-D"
+          - "{{ postgres_data_dir }}"
+          - "-Fp"
+          - "-Xs"
+          - "-P"
+          - "-R"
+          - "--checkpoint=fast"
+          - "--slot={{ postgres_replication_slot }}"
+      environment:
+        PGPASSFILE: /var/lib/postgresql/.pgpass
+      become: true
+      become_user: postgres
+      no_log: true
+      changed_when: true
+
+    - name: Configure primary_conninfo and the replication slot
+      ansible.builtin.copy:
+        dest: "{{ postgres_data_dir }}/postgresql.auto.conf"
+        content: |
+          primary_conninfo = '{{ postgres_replication_conninfo }}'
+          primary_slot_name = '{{ postgres_replication_slot }}'
+          recovery_target_timeline = 'latest'
+        owner: postgres
+        group: postgres
+        mode: "0600"
+
+    - name: Enable standby mode
+      ansible.builtin.file:
+        path: "{{ postgres_data_dir }}/standby.signal"
+        state: touch
+        owner: postgres
+        group: postgres
+        mode: "0600"
+        modification_time: preserve
+        access_time: preserve
+
+    - name: Start PostgreSQL in standby mode
+      ansible.builtin.service:
+        name: postgresql
+        state: started
+
+- name: Wait for the replica to accept connections
+  ansible.builtin.wait_for:
+    host: "{{ '127.0.0.1' if postgres_listen_addresses in ['0.0.0.0', '*'] else postgres_listen_addresses }}"
+    port: "{{ postgres_port }}"
+    timeout: 60
+    delay: 2
+
+- name: Verify that the instance is running in recovery
+  community.postgresql.postgresql_query:
+    query: "SELECT pg_is_in_recovery() AS in_recovery"
+    login_user: postgres
+    login_unix_socket: /var/run/postgresql
+  become: true
+  become_user: postgres
+  register: postgres_recovery
+  changed_when: false
+  failed_when: not (postgres_recovery.query_result[0].in_recovery | bool)
+
+- name: Wait for streaming replication to start
+  community.postgresql.postgresql_query:
+    query: "SELECT status FROM pg_stat_wal_receiver"
+    login_user: postgres
+    login_unix_socket: /var/run/postgresql
+  become: true
+  become_user: postgres
+  register: postgres_wal_receiver
+  changed_when: false
+  until:
+    - postgres_wal_receiver.query_result | length > 0
+    - postgres_wal_receiver.query_result[0].status == "streaming"
+  retries: 60
+  delay: 5

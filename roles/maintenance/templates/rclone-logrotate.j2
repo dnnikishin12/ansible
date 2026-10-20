@@ -1,0 +1,8 @@
+{{ rclone_log_dir }}/*.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    copytruncate
+}

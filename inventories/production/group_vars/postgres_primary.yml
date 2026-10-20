@@ -1,0 +1,4 @@
+---
+# Primary-specific PostgreSQL settings. The role detects group membership, so
+# this file exists mainly to make the intent explicit and to hold overrides.
+postgres_role: "primary"

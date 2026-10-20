@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Managed by Ansible
+set -euo pipefail
+umask 077
+
+backup_dir="{{ gitlab_backup_dir }}"
+stamp="$(date +%Y-%m-%d)"
+
+install -d -o git -g git -m 0700 "$backup_dir"
+GITLAB_ASSUME_YES=1 /opt/gitlab/bin/gitlab-backup create CRON=1 STRATEGY=copy
+
+install -m 0600 /etc/gitlab/gitlab.rb "${backup_dir}/gitlab.rb.${stamp}"
+install -m 0600 /etc/gitlab/gitlab-secrets.json "${backup_dir}/gitlab-secrets.json.${stamp}"
+
+find "$backup_dir" -maxdepth 1 -type f -mtime +{{ gitlab_backup_keep_days }} -delete

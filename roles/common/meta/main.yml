@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: common
+  author: TLCamp Infrastructure
+  description: Baseline packages, users, SSH hardening, firewall and time sync
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies: []

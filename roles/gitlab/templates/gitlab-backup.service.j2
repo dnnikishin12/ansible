@@ -1,0 +1,11 @@
+[Unit]
+Description=GitLab backup
+After=gitlab-runsvdir.service
+Requires=gitlab-runsvdir.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gitlab-backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -1,0 +1,11 @@
+[Unit]
+Description=rclone job {{ rclone_job.name }}
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rclone {{ rclone_job.mode | default('copy') }} "{{ rclone_job.source }}" "{{ rclone_remote_name }}:{{ rclone_job.destination }}" --config {{ rclone_config_path }} --log-file {{ rclone_log_dir }}/{{ rclone_job.name }}.log --log-level INFO --stats 5m --stats-one-line --transfers {{ rclone_job.transfers | default(4) }} --checkers {{ rclone_job.checkers | default(8) }} --retries {{ rclone_job.retries | default(3) }} {{ rclone_job.extra_args | default([]) | join(' ') }}
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

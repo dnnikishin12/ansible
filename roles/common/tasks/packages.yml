@@ -1,0 +1,42 @@
+---
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install baseline packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+
+- name: Ensure QEMU guest agent is enabled
+  ansible.builtin.service:
+    name: qemu-guest-agent
+    state: started
+    enabled: true
+  failed_when: false
+
+- name: Ensure rsyslog is enabled for Filebeat log collection
+  ansible.builtin.service:
+    name: rsyslog
+    state: started
+    enabled: true
+
+- name: Configure unattended upgrades
+  when: common_unattended_upgrades_enabled | bool
+  block:
+    - name: Enable periodic unattended upgrades
+      ansible.builtin.template:
+        src: 20auto-upgrades.j2
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Configure automatic reboot policy
+      ansible.builtin.lineinfile:
+        path: /etc/apt/apt.conf.d/50unattended-upgrades
+        regexp: '^Unattended-Upgrade::Automatic-Reboot '
+        line: 'Unattended-Upgrade::Automatic-Reboot "{{ common_unattended_upgrades_reboot | bool | lower }}";'
+        create: true
+        mode: "0644"

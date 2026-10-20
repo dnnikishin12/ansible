@@ -1,0 +1,36 @@
+---
+- name: PostgreSQL primary
+  hosts: postgres_primary
+  become: true
+  any_errors_fatal: true
+  roles:
+    - role: postgres
+      tags: [postgres, postgres_primary]
+
+- name: PostgreSQL replicas (first level)
+  hosts: "postgres_replicas:!postgres_cascading"
+  become: true
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  roles:
+    - role: postgres
+      tags: [postgres, postgres_replica]
+
+# Run after pg02 so that the replica_pg03 slot already exists on its upstream.
+- name: PostgreSQL cascading replicas
+  hosts: postgres_cascading
+  become: true
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  roles:
+    - role: postgres
+      tags: [postgres, postgres_replica, postgres_cascading]
+
+- name: Valkey on the primary database VM
+  hosts: valkey
+  become: true
+  roles:
+    - role: valkey
+      tags: [valkey]
