@@ -16,6 +16,22 @@ max_slot_wal_keep_size = '{{ postgres_max_slot_wal_keep_size }}'
 hot_standby = on
 password_encryption = {{ postgres_password_encryption }}
 
+{% if postgres_walg_archive_enabled | bool %}
+# Archive WAL to S3 with WAL-G. Only the primary archives; a promoted replica
+# needs an inventory/topology update and another role run.
+archive_mode = on
+{% if postgres_walg_secondary_enabled | bool %}
+# The helper writes every segment to both configured S3 targets and succeeds
+# only when both copies are present.
+archive_command = '{{ postgres_walg_archive_script }} "%p"'
+{% else %}
+archive_command = '{{ postgres_walg_wrapper }} wal-push "%p"'
+{% endif %}
+archive_timeout = '{{ postgres_walg_archive_timeout }}'
+{% else %}
+archive_mode = off
+{% endif %}
+
 logging_collector = on
 log_directory = '/var/log/postgresql'
 log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'

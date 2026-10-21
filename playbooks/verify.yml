@@ -50,6 +50,84 @@
     - name: Import the PostgreSQL replication topology facts
       ansible.builtin.import_tasks: ../roles/postgres/tasks/topology.yml
 
+    - name: Verify WAL-G archiving on the primary
+      when:
+        - inventory_hostname in groups['postgres_primary'] | default([])
+        - postgres_walg_enabled | default(true) | bool
+      block:
+        - name: Read the effective PostgreSQL archive settings
+          community.postgresql.postgresql_query:
+            query: >-
+              SELECT current_setting('archive_mode') AS archive_mode,
+                     current_setting('archive_command') AS archive_command
+            login_user: postgres
+            login_unix_socket: /var/run/postgresql
+          become: true
+          become_user: postgres
+          register: postgres_archive
+          changed_when: false
+
+        - name: Assert that WAL archiving uses WAL-G
+          ansible.builtin.assert:
+            that:
+              - postgres_archive.query_result[0].archive_mode == 'on'
+              - >-
+                ('wal-push' in postgres_archive.query_result[0].archive_command)
+                or ((postgres_walg_archive_script | default('/usr/local/sbin/walg-archive'))
+                    in postgres_archive.query_result[0].archive_command)
+              - >-
+                not (postgres_walg_secondary_enabled | default(true) | bool)
+                or ((postgres_walg_archive_script | default('/usr/local/sbin/walg-archive'))
+                    in postgres_archive.query_result[0].archive_command)
+            fail_msg: >-
+              archive_mode/archive_command are not configured for WAL-G on
+              {{ inventory_hostname }}. When the second S3 copy is enabled,
+              archive_command must call the dual-target walg-archive helper.
+
+        - name: Verify that the WAL-G timers are active  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            cmd: "systemctl is-active --quiet {{ item }}"
+          loop:
+            - wal-g-full.timer
+            - wal-g-diff.timer
+          changed_when: false
+
+        - name: List backups in the primary WAL-G storage
+          ansible.builtin.command:
+            cmd: "{{ postgres_walg_wrapper | default('/usr/local/bin/walg') }} backup-list --json"
+          become: true
+          become_user: postgres
+          register: postgres_walg_primary_backups
+          changed_when: false
+          when: postgres_walg_secondary_enabled | default(true) | bool
+
+        - name: List backups in the second WAL-G storage
+          ansible.builtin.command:
+            cmd: >-
+              {{ postgres_walg_secondary_wrapper | default('/usr/local/bin/walg-secondary') }}
+              backup-list --json
+          become: true
+          become_user: postgres
+          register: postgres_walg_secondary_backups
+          changed_when: false
+          when: postgres_walg_secondary_enabled | default(true) | bool
+
+        - name: Assert that every primary backup is present in the second S3
+          ansible.builtin.assert:
+            that:
+              - >-
+                (postgres_walg_primary_backups.stdout | from_json
+                 | map(attribute='backup_name') | list
+                 | difference(postgres_walg_secondary_backups.stdout | from_json
+                              | map(attribute='backup_name') | list)
+                 | length) == 0
+            fail_msg: >-
+              One or more WAL-G backups from the primary S3 are missing in the
+              second S3 on {{ inventory_hostname }}. Check the
+              wal-g-backup@full/diff.service logs and run the copy command
+              again.
+          when: postgres_walg_secondary_enabled | default(true) | bool
+
     - name: Count streaming downstream replicas
       community.postgresql.postgresql_query:
         query: >-

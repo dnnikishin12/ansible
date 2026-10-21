@@ -1,0 +1,22 @@
+---
+# Cleanup path for postgres_walg_enabled=false. The files stay in place so
+# backups can be re-enabled without re-downloading WAL-G, but the timers must
+# not keep pushing backups behind the operator's back.
+
+- name: Check for installed WAL-G timer units
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ item }}"
+  loop:
+    - wal-g-full.timer
+    - wal-g-diff.timer
+  register: postgres_walg_disabled_timers
+
+- name: Stop and disable WAL-G timers
+  ansible.builtin.systemd:
+    name: "{{ item.item }}"
+    enabled: false
+    state: stopped
+  loop: "{{ postgres_walg_disabled_timers.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists

@@ -27,6 +27,18 @@ postgres_users: []
 postgres_databases: []
 postgres_privileges: []
 
-postgres_backup_enabled: true
-postgres_backup_keep_days: "{{ local_backup_keep_days }}"
-postgres_backup_schedule: "*-*-* 01:30:00"
+postgres_walg_enabled: true
+postgres_walg_s3_prefix: "s3://db-backup/db/pg{{ postgres_version }}/main-encrypted-v1"
+postgres_walg_s3_endpoint: "https://hb.ru-msk.vkcloud-storage.ru"
+postgres_walg_s3_region: "ru-msk"
+# Two copies are required. Replace the placeholder secondary prefix with a
+# real bucket (the role rejects CHANGE-ME). If the second S3 uses another
+# account, also set vault_walg_secondary_s3_access_key_id and
+# vault_walg_secondary_s3_secret_access_key in the vault; otherwise the
+# primary WAL-G credentials are reused.
+postgres_walg_secondary_enabled: true
+# postgres_walg_secondary_s3_prefix: "s3://CHANGE-ME-secondary-bucket/db/pg{{ postgres_version }}/main-encrypted-v1"
+# postgres_walg_secondary_s3_endpoint: "https://hb.ru-msk.vkcloud-storage.ru"
+# postgres_walg_secondary_s3_region: "ru-msk"
+postgres_walg_full_schedule: "Sun *-*-* 02:00:00"
+postgres_walg_diff_schedule: "*-*-* 03:00:00"

@@ -1,0 +1,35 @@
+#!/bin/sh
+# Managed by Ansible
+#
+# PostgreSQL calls this from archive_command. Push the segment to both S3
+# targets independently: if one target is temporarily unavailable, the other
+# still receives the WAL, and PostgreSQL retries until both copies succeed.
+set -u
+
+wal_file="${1:?Usage: walg-archive WALFILE}"
+primary_status=0
+secondary_status=0
+
+# The local archive status is keyed only by WAL filename and is shared by both
+# configs. An old single-target run or a background upload can leave a mark
+# that would make one of the pushes below skip this segment. Remove it so the
+# segment is checked against both storages; WALG_PREVENT_WAL_OVERWRITE keeps
+# the retry idempotent when a copy already exists.
+wal_dir=${wal_file%/*}
+wal_name=${wal_file##*/}
+status_name="${wal_name%.*}"
+status_file="$wal_dir/walg_data/walg_archive_status/$status_name"
+if [ -e "$status_file" ] && ! rm -f "$status_file"; then
+  echo "Cannot clear the shared WAL-G archive status $status_file" >&2
+  exit 1
+fi
+
+# Also disable WAL-G's background uploader: otherwise one target's uploader
+# can mark future segments as uploaded for the other target.
+WALG_UPLOAD_CONCURRENCY=1 "{{ postgres_walg_wrapper }}" wal-push "$wal_file" || primary_status=$?
+WALG_UPLOAD_CONCURRENCY=1 "{{ postgres_walg_secondary_wrapper }}" wal-push "$wal_file" || secondary_status=$?
+
+if [ "$primary_status" -ne 0 ] || [ "$secondary_status" -ne 0 ]; then
+  echo "WAL-G archive failed for $wal_file: primary=$primary_status secondary=$secondary_status" >&2
+  exit 1
+fi

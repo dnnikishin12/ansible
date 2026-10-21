@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+
+exec 9>/var/lib/postgresql/.walg-backup.lock
+flock -x 9
+
+mode="${1:?Укажи full или diff}"
+pgdata="$(jq -er '.PGDATA' /etc/wal-g/config.json)"
+
+case "$mode" in
+  full)
+    export WALG_DELTA_MAX_STEPS=0
+    ;;
+  diff)
+    export WALG_DELTA_MAX_STEPS=7
+    export WALG_DELTA_ORIGIN=LATEST_FULL
+    ;;
+  *)
+    echo "Неизвестный режим: $mode" >&2
+    exit 1
+    ;;
+esac
+
+/usr/local/bin/walg backup-push "$pgdata"
+
+if [[ "$mode" == full ]]; then
+  /usr/local/bin/walg delete retain FULL 4 --confirm
+fi

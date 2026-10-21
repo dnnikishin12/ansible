@@ -131,6 +131,14 @@ Valkey и Elastic Stack устанавливаются и настраивают
 7. **Секреты** в зашифрованном `vault.yml` (см. ниже). Скопируйте
    `vault.yml.example`, заполните и зашифруйте. Роли проверяют, что ключевые
    пароли и SSH-ключи не остались заглушками `ChangeMe`/`ReplaceMe`.
+   Для WAL-G дополнительно задайте `vault_walg_s3_access_key_id`,
+   `vault_walg_s3_secret_access_key` и `vault_walg_libsodium_key`. Роль
+   хранит две копии бэкапов в двух S3; задайте реальный
+   `postgres_walg_secondary_s3_prefix` (по умолчанию там заглушка
+   `CHANGE-ME`). Если второй S3 в другом аккаунте, добавьте
+   `vault_walg_secondary_s3_access_key_id` и
+   `vault_walg_secondary_s3_secret_access_key`, иначе используются ключи
+   primary S3.
 8. **Параметры Proxmox** в `provisioning/proxmox/vars.yml`:
    `proxmox_api_host`, `proxmox_node`, `proxmox_template`, `proxmox_storage`,
    `proxmox_bridge`, если используете provisioning.
@@ -322,6 +330,11 @@ Ansible как group vars для всех хостов. Файл зашифро�
 | `vault_gitlab_smtp_password` | пароль SMTP (если включён) |
 | `vault_postgres_replication_password` | пароль пользователя `replicator` |
 | `vault_postgres_app_password` | пример пароля прикладного пользователя |
+| `vault_walg_s3_access_key_id` | access key для primary WAL-G S3 (PostgreSQL backups) |
+| `vault_walg_s3_secret_access_key` | secret key для primary WAL-G S3 |
+| `vault_walg_libsodium_key` | 64 hex-символа для шифрования WAL-G (общий ключ обеих копий) |
+| `vault_walg_secondary_s3_access_key_id` | опционально: access key для второго WAL-G S3; если не задан, используется primary |
+| `vault_walg_secondary_s3_secret_access_key` | опционально: secret key для второго WAL-G S3; если не задан, используется primary |
 | `vault_valkey_password` | `requirepass` для Valkey |
 | `vault_elastic_password` | пароль суперпользователя `elastic` |
 | `vault_kibana_system_password` | пароль `kibana_system` |
@@ -336,6 +349,7 @@ Ansible как group vars для всех хостов. Файл зашифро�
 ```bash
 openssl rand -hex 24     # для PostgreSQL replication: без ':' и '\'
 openssl rand -base64 24  # для остальных паролей
+openssl rand -hex 32     # для vault_walg_libsodium_key (64 hex-символа)
 ```
 
 Для `vault_postgres_replication_password` лучше использовать hex или другой
@@ -443,7 +457,7 @@ Filebeat ставится на 9 машин; `elk01` хранит логи ло�
 | `common_firewall_ssh_sources` | `internal_network` | **проверить до bootstrap** |
 | `common_admin_user` | `deploy` | создаётся ролью `common` |
 | `common_admin_sudo_nopasswd` | `true` | при необходимости ужесточить |
-| `local_backup_keep_days` | `7` | локальное хранение backup-ов |
+| `local_backup_keep_days` | `7` | локальное хранение GitLab backup-ов |
 
 ## Provisioning в Proxmox VE
 
@@ -611,7 +625,16 @@ ansible-playbook playbooks/site.yml --check --diff --ask-vault-pass
 - прикладные пользователи, базы и привилегии задаются списками
   `postgres_users`, `postgres_databases`, `postgres_privileges` в
   `group_vars/postgres.yml` (по умолчанию пусты);
-- ежедневный `pg_dumpall` на primary.
+- физические бэкапы WAL-G на primary: WAL-архив и base backup в **два
+  независимых S3**, шифрование libsodium, `zstd`; weekly full (`Sun 02:00`)
+  + daily diff (`03:00`), хранение 4 full-бэкапов в каждом S3. Каждый
+  WAL-сегмент отправляется в оба S3 через `/usr/local/sbin/walg-archive`,
+  а base backup копируется во второй S3 через `wal-g copy`. Реплики не
+  архивируют WAL;
+- скрипты и таймеры: `/usr/local/sbin/walg-backup`,
+  `wal-g-full.timer`, `wal-g-diff.timer`; конфигурация —
+  `/etc/wal-g/config.json` и `/etc/wal-g/config-secondary.json`, ключ —
+  `/etc/wal-g/libsodium-v1.hex`.
 
 Межоблачная репликация асинхронная: задержка зависит от RTT и пропускной
 способности канала. Слот `replica_pg03` на `pg02` удерживает WAL для `pg03`;
@@ -884,28 +907,70 @@ certbot не устанавливается. Используйте custom-се�
 
 | Что | Где | Когда | Хранение |
 |---|---|---|---|
-| PostgreSQL logical dump | `pg01:/var/backups/postgresql` | ежедневно 01:30 | 7 дней |
+| PostgreSQL WAL-G (full) | два S3: `s3://db-backup/...` и `s3://<second-bucket>/...` | воскресенье 02:00 | 4 full + diffs в каждом S3 |
+| PostgreSQL WAL-G (diff) | те же два S3 | ежедневно 03:00 | в цепочке full |
 | GitLab backup | `gitlab01:/var/opt/gitlab/backups` | ежедневно 02:30 | 7 дней |
 | rclone jobs | `maint01` | по расписанию job-а | зависит от S3 |
 
 Таймеры:
 
 ```bash
-systemctl list-timers --all | grep -E 'postgres|gitlab|rclone|docker'
+systemctl list-timers --all | grep -E 'wal-g|gitlab|rclone|docker'
 ```
 
 ### PostgreSQL
 
-`pg_dumpall --clean --if-exists` сжимается gzip. Восстановление — вручную:
+Роль `postgres` устанавливает WAL-G (PostgreSQL-сборка, версия из
+`postgres_walg_version`) и настраивает физическое резервное копирование в
+**два независимых S3-совместимых хранилища**:
+
+- `archive_mode=on` и `archive_command` только на primary; реплики
+  продолжают streaming replication и WAL не архивируют;
+- `/usr/local/sbin/walg-archive` отправляет каждый WAL-сегмент в оба S3
+  независимо и возвращает успех только когда обе копии записаны; фоновая
+  догрузка WAL-G отключена, чтобы общая локальная отметка сегмента не
+  скрыла отправку во второй S3;
+- WAL-G шифрует данные libsodium-ключом
+  `/etc/wal-g/libsodium-v1.hex` (переменная `vault_walg_libsodium_key`);
+- weekly full backup и daily differential backup запускаются systemd-
+  таймерами `wal-g-full.timer` и `wal-g-diff.timer`;
+- после `backup-push` база копируется во второй S3 через `wal-g copy`;
+- retention: `wal-g delete retain FULL 4` после каждого full в обоих S3;
+- конфигурации S3 — `/etc/wal-g/config.json` и
+  `/etc/wal-g/config-secondary.json`, обёртки — `/usr/local/bin/walg` и
+  `/usr/local/bin/walg-secondary`, скрипт — `/usr/local/sbin/walg-backup`;
+- старый `postgres-backup.timer` с `pg_dumpall` роль останавливает и удаляет,
+  чтобы не запускались две схемы резервного копирования.
+
+Ручной запуск и проверка:
 
 ```bash
-sudo systemctl stop <приложение>
-gunzip -c /var/backups/postgresql/postgresql-YYYYMMDD-HHMMSS.sql.gz \
-  | sudo -u postgres psql
+# Полный бэкап сейчас
+sudo systemctl start wal-g-backup@full.service
+journalctl -u wal-g-backup@full.service -n 100 --no-pager
+
+# Списки бэкапов в обоих S3
+sudo -u postgres walg backup-list
+sudo -u postgres walg-secondary backup-list
+
+# Состояние WAL-архива
+sudo -u postgres psql -c "SHOW archive_mode; SHOW archive_command;"
+sudo -u postgres psql -c "SELECT * FROM pg_stat_archiver;"
 ```
 
-Для большой базы logical dump может быть тяжёлым; в production рассмотрите
-`pg_basebackup`/WAL-архив (pgBackRest, Barman) и проверку restore.
+Если второй S3 временно недоступен, `archive_command` завершается ошибкой,
+а PostgreSQL накапливает WAL в `pg_wal` до восстановления доступа. Это
+следствие требования хранить обе копии синхронно; следите за
+`pg_stat_archiver` и свободным местом. При первом включении второго S3
+запустите full backup вручную (или дождитесь воскресного full), чтобы
+скопировать уже существующие бэкапы.
+
+**Ключ шифрования нельзя терять.** Без `vault_walg_libsodium_key` (или его
+копии) зашифрованные бэкапы восстановить невозможно. Храните копию ключа
+вне `pg01`, например в менеджере секретов или в отдельном vault.
+
+Пошаговое восстановление (full, PITR, восстановление на новую ВМ) описано в
+[`docs/postgres-wal-g.md`](docs/postgres-wal-g.md).
 
 ### GitLab
 
@@ -1055,6 +1120,12 @@ sudo -u postgres psql -c "SELECT client_addr, application_name, state FROM pg_st
 sudo -u postgres psql -c "SELECT pg_is_in_recovery();"   # на pg02/pg03: t
 sudo -u postgres psql -c "SELECT status FROM pg_stat_wal_receiver;"  # pg02/pg03: streaming
 
+# WAL-G (pg01)
+systemctl status wal-g-full.timer wal-g-diff.timer
+sudo -u postgres psql -c "SELECT * FROM pg_stat_archiver;"
+sudo -u postgres walg backup-list
+sudo -u postgres walg-secondary backup-list
+
 # Valkey
 valkey-cli -h 127.0.0.1 -p 6379 -a "$VALKEY_PASSWORD" --no-auth-warning ping
 
@@ -1092,6 +1163,10 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
 | Реплика не догоняет | слот на непосредственном upstream, `pg_stat_replication`, `.pgpass`, `pg_hba`, firewall |
 | Роль отклоняет существующую реплику | upstream/slot в `postgres_replication_topology` не совпадает с `SHOW primary_conninfo` / `SHOW primary_slot_name`; пересоберите реплику или обновите конфигурацию вручную |
 | `pg03` не подключается к `pg02` | `postgres_replication_address` на `pg02`, NAT/VPN, `postgres_replication_source_cidr`, UFW и `pg_hba` на `pg02`, `wal_status` слота `replica_pg03` |
+| WAL не архивируется | `SELECT * FROM pg_stat_archiver;`, `journalctl -u postgresql@18-main`, доступность обоих S3, права `postgres` на `/etc/wal-g/config.json`, `/etc/wal-g/config-secondary.json` и ключ, `walg backup-list`, `walg-secondary backup-list` |
+| WAL-G backup падает | `journalctl -u wal-g-backup@full.service`, версия `wal-g --version`, S3 endpoint/region в обоих конфигах, `WALG_S3_PREFIX`, ключ libsodium |
+| Второй S3 отстаёт или не принимает копии | `journalctl -u wal-g-backup@*`, `walg-secondary backup-list`, `wal-g copy --from /etc/wal-g/config.json --to /etc/wal-g/config-secondary.json`, credentials второго S3 |
+| Не восстанавливается зашифрованный бэкап | тот же `vault_walg_libsodium_key`, что при создании; без него restore невозможен |
 | `postgres_replica_rebuild` | после пересборки верните `false` |
 | nginx отдаёт 502 | upstream IP/порт, UFW на GitLab/ELK, `nginx -t` |
 | Сертификат не тот | `nginx_tls_mode`, пути к cert/key, SAN, перезапуск nginx |
@@ -1147,6 +1222,9 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
 ├── requirements.txt
 ├── requirements.yml
 ├── vmlist
+├── docs/
+│   ├── gitlab-migration.md
+│   └── postgres-wal-g.md
 ├── inventories/
 │   └── production/
 │       ├── hosts.yml

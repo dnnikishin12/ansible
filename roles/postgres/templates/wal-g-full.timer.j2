@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly WAL-G full backup
+
+[Timer]
+OnCalendar={{ postgres_walg_full_schedule }} {{ postgres_walg_schedule_timezone }}
+Persistent=true
+Unit=wal-g-backup@full.service
+
+[Install]
+WantedBy=timers.target

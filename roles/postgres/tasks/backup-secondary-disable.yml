@@ -1,0 +1,20 @@
+---
+# Remove the old second-copy helpers only after configure.yml has restarted
+# PostgreSQL with the primary-only archive_command. Removing them earlier
+# could leave archive_command pointing at a missing script during the window
+# before the restart.
+
+- name: Remove the secondary WAL-G configuration
+  ansible.builtin.file:
+    path: "{{ postgres_walg_secondary_config_file }}"
+    state: absent
+
+- name: Remove the secondary WAL-G wrapper
+  ansible.builtin.file:
+    path: "{{ postgres_walg_secondary_wrapper }}"
+    state: absent
+
+- name: Remove the dual-target WAL-G archive command
+  ansible.builtin.file:
+    path: "{{ postgres_walg_archive_script }}"
+    state: absent

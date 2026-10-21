@@ -1,41 +1,169 @@
 ---
-- name: Ensure the PostgreSQL backup directory exists
+# Install and configure WAL-G on the primary. Replicas receive neither the
+# binary nor the S3 credentials: they do not archive WAL.
+
+- name: Validate the WAL-G settings
+  ansible.builtin.assert:
+    that:
+      - postgres_walg_arch in postgres_walg_checksums
+      - postgres_walg_s3_prefix.startswith('s3://')
+      - postgres_walg_s3_access_key_id | length >= 16
+      - postgres_walg_s3_secret_access_key | length >= 16
+      - "'ChangeMe' not in postgres_walg_s3_access_key_id"
+      - "'ChangeMe' not in postgres_walg_s3_secret_access_key"
+      - postgres_walg_libsodium_key | trim is match('^[0-9a-fA-F]{64}$')
+      - postgres_walg_retain_full | int >= 1
+      - postgres_walg_secondary_config_file != postgres_walg_config_file
+      - postgres_walg_secondary_wrapper != postgres_walg_wrapper
+      - not (postgres_walg_secondary_enabled | bool) or postgres_walg_secondary_s3_prefix.startswith('s3://')
+      - not (postgres_walg_secondary_enabled | bool) or 'CHANGE-ME' not in postgres_walg_secondary_s3_prefix
+      - not (postgres_walg_secondary_enabled | bool) or 'ChangeMe' not in postgres_walg_secondary_s3_prefix
+      - not (postgres_walg_secondary_enabled | bool) or postgres_walg_secondary_s3_endpoint.startswith('http')
+      - not (postgres_walg_secondary_enabled | bool) or postgres_walg_secondary_s3_region | length > 0
+      - not (postgres_walg_secondary_enabled | bool) or postgres_walg_secondary_s3_access_key_id | length >= 16
+      - not (postgres_walg_secondary_enabled | bool) or postgres_walg_secondary_s3_secret_access_key | length >= 16
+      - not (postgres_walg_secondary_enabled | bool) or 'ChangeMe' not in postgres_walg_secondary_s3_access_key_id
+      - not (postgres_walg_secondary_enabled | bool) or 'ChangeMe' not in postgres_walg_secondary_s3_secret_access_key
+      - >-
+        not (postgres_walg_secondary_enabled | bool)
+        or postgres_walg_secondary_s3_prefix != postgres_walg_s3_prefix
+        or postgres_walg_secondary_s3_endpoint != postgres_walg_s3_endpoint
+    fail_msg: >-
+      Set vault_walg_s3_access_key_id, vault_walg_s3_secret_access_key and
+      vault_walg_libsodium_key in the encrypted vault. The libsodium key must
+      be 64 hex characters; generate it with `openssl rand -hex 32` and keep a
+      copy outside the server: without it encrypted backups cannot be restored.
+      For the required second copy, set postgres_walg_secondary_s3_prefix to a
+      different bucket and, if needed, postgres_walg_secondary_s3_endpoint,
+      postgres_walg_secondary_s3_region and the optional
+      vault_walg_secondary_s3_* credentials. Set
+      postgres_walg_secondary_enabled=false only if a single copy is
+      intentional.
+
+- name: Ensure the WAL-G configuration directory exists
   ansible.builtin.file:
-    path: "{{ postgres_backup_dir }}"
+    path: "{{ postgres_walg_config_dir }}"
     state: directory
     owner: root
-    group: root
-    mode: "0700"
-
-- name: Install the PostgreSQL backup script
-  ansible.builtin.template:
-    src: postgres-backup.sh.j2
-    dest: /usr/local/sbin/postgres-backup.sh
-    owner: root
-    group: root
+    group: postgres
     mode: "0750"
 
-- name: Install the PostgreSQL backup service
+- name: Install the WAL-G binary
+  ansible.builtin.get_url:
+    url: "{{ postgres_walg_download_url }}"
+    dest: "{{ postgres_walg_bin }}"
+    checksum: "{{ postgres_walg_checksum }}"
+    owner: root
+    group: root
+    mode: "0755"
+    force: false
+
+- name: Verify the installed WAL-G version
+  ansible.builtin.command:
+    cmd: "{{ postgres_walg_bin }} --version"
+  register: postgres_walg_installed_version
+  changed_when: false
+  failed_when: postgres_walg_version not in postgres_walg_installed_version.stdout
+
+- name: Install the libsodium encryption key
+  ansible.builtin.copy:
+    dest: "{{ postgres_walg_libsodium_key_path }}"
+    content: "{{ postgres_walg_libsodium_key | trim }}"
+    owner: root
+    group: postgres
+    mode: "0640"
+  no_log: true
+
+- name: Deploy the primary WAL-G configuration
+  ansible.builtin.copy:
+    dest: "{{ postgres_walg_config_file }}"
+    content: "{{ postgres_walg_config | to_nice_json }}\n"
+    owner: root
+    group: postgres
+    mode: "0640"
+  no_log: true
+
+- name: Deploy the secondary WAL-G configuration
+  ansible.builtin.copy:
+    dest: "{{ postgres_walg_secondary_config_file }}"
+    content: "{{ postgres_walg_secondary_config | to_nice_json }}\n"
+    owner: root
+    group: postgres
+    mode: "0640"
+  no_log: true
+  when: postgres_walg_secondary_enabled | bool
+
+- name: Install the primary WAL-G wrapper
   ansible.builtin.template:
-    src: postgres-backup.service.j2
-    dest: /etc/systemd/system/postgres-backup.service
+    src: walg-wrapper.sh.j2
+    dest: "{{ postgres_walg_wrapper }}"
+    owner: root
+    group: root
+    mode: "0755"
+  vars:
+    walg_config_file: "{{ postgres_walg_config_file }}"
+
+- name: Install the secondary WAL-G wrapper
+  ansible.builtin.template:
+    src: walg-wrapper.sh.j2
+    dest: "{{ postgres_walg_secondary_wrapper }}"
+    owner: root
+    group: root
+    mode: "0755"
+  vars:
+    walg_config_file: "{{ postgres_walg_secondary_config_file }}"
+  when: postgres_walg_secondary_enabled | bool
+
+- name: Install the dual-target WAL-G archive command
+  ansible.builtin.template:
+    src: walg-archive.sh.j2
+    dest: "{{ postgres_walg_archive_script }}"
+    owner: root
+    group: postgres
+    mode: "0750"
+  when: postgres_walg_secondary_enabled | bool
+
+- name: Install the WAL-G backup script
+  ansible.builtin.template:
+    src: walg-backup.sh.j2
+    dest: "{{ postgres_walg_backup_script }}"
+    owner: root
+    group: postgres
+    mode: "0750"
+
+- name: Install the WAL-G backup service
+  ansible.builtin.template:
+    src: wal-g-backup@.service.j2
+    dest: "/etc/systemd/system/wal-g-backup@.service"
     owner: root
     group: root
     mode: "0644"
   notify: Reload systemd
 
-- name: Install the PostgreSQL backup timer
+- name: Install the WAL-G full backup timer
   ansible.builtin.template:
-    src: postgres-backup.timer.j2
-    dest: /etc/systemd/system/postgres-backup.timer
+    src: wal-g-full.timer.j2
+    dest: "/etc/systemd/system/wal-g-full.timer"
     owner: root
     group: root
     mode: "0644"
   notify: Reload systemd
 
-- name: Enable the PostgreSQL backup timer
+- name: Install the WAL-G differential backup timer
+  ansible.builtin.template:
+    src: wal-g-diff.timer.j2
+    dest: "/etc/systemd/system/wal-g-diff.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Enable the WAL-G backup timers
   ansible.builtin.systemd:
-    name: postgres-backup.timer
+    name: "{{ item }}"
     enabled: true
     state: started
     daemon_reload: true
+  loop:
+    - wal-g-full.timer
+    - wal-g-diff.timer

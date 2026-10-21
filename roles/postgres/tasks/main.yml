@@ -15,8 +15,43 @@
 - name: Install PostgreSQL packages
   ansible.builtin.import_tasks: install.yml
 
+- name: Remove the legacy logical backup units
+  ansible.builtin.import_tasks: backup-legacy.yml
+  when: inventory_hostname in groups['postgres_primary'] | default([])
+
+# Install WAL-G before the restart in configure.yml: archive_mode=on must not
+# point at a missing archive_command binary even briefly on a fresh host.
+- name: Configure WAL-G physical backups
+  ansible.builtin.import_tasks: backup.yml
+  when:
+    - inventory_hostname in groups['postgres_primary'] | default([])
+    - postgres_walg_enabled | bool
+
+- name: Disable WAL-G physical backups
+  ansible.builtin.import_tasks: backup-disable.yml
+  when:
+    - inventory_hostname in groups['postgres_primary'] | default([])
+    - not (postgres_walg_enabled | bool)
+
 - name: Configure PostgreSQL
   ansible.builtin.import_tasks: configure.yml
+
+- name: Run the initial WAL-G full backup
+  ansible.builtin.systemd:
+    name: wal-g-backup@full.service
+    state: started
+    daemon_reload: true
+  when:
+    - inventory_hostname in groups['postgres_primary'] | default([])
+    - postgres_walg_enabled | bool
+    - postgres_walg_run_initial_backup | bool
+
+- name: Remove helpers for a disabled second WAL-G copy
+  ansible.builtin.import_tasks: backup-secondary-disable.yml
+  when:
+    - inventory_hostname in groups['postgres_primary'] | default([])
+    - postgres_walg_enabled | bool
+    - not (postgres_walg_secondary_enabled | bool)
 
 - name: Configure the primary
   ansible.builtin.import_tasks: primary.yml
@@ -31,9 +66,3 @@
 - name: Configure replication slots for downstream replicas
   ansible.builtin.import_tasks: slots.yml
   when: postgres_downstream_replicas | length > 0
-
-- name: Configure local logical backups
-  ansible.builtin.import_tasks: backup.yml
-  when:
-    - inventory_hostname in groups['postgres_primary'] | default([])
-    - postgres_backup_enabled | bool

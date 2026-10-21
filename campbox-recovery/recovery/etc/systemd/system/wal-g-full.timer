@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly WAL-G full backup
+
+[Timer]
+OnCalendar=Sun *-*-* 02:00:00 Europe/Moscow
+Persistent=true
+Unit=wal-g-backup@full.service
+
+[Install]
+WantedBy=timers.target

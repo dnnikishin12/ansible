@@ -21,6 +21,7 @@
     name:
       - "postgresql-{{ postgres_version }}"
       - "postgresql-client-{{ postgres_version }}"
+      - jq
       - python3-psycopg2
     state: present
 

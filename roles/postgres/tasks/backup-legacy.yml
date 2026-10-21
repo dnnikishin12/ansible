@@ -1,0 +1,30 @@
+---
+# The role used to install a daily pg_dumpall timer. Remove those units when
+# switching to WAL-G so the host does not run two backup schemes. Existing
+# dumps under /var/backups/postgresql are intentionally left untouched.
+
+- name: Check for legacy logical backup files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /etc/systemd/system/postgres-backup.timer
+    - /etc/systemd/system/postgres-backup.service
+    - /usr/local/sbin/postgres-backup.sh
+  register: postgres_legacy_backup_files
+
+- name: Stop and disable the legacy logical backup timer
+  ansible.builtin.systemd:
+    name: postgres-backup.timer
+    enabled: false
+    state: stopped
+  when: postgres_legacy_backup_files.results[0].stat.exists | default(false)
+
+- name: Remove the legacy logical backup units and script
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: absent
+  loop: "{{ postgres_legacy_backup_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists
+  notify: Reload systemd

@@ -1,0 +1,18 @@
+{
+  "WALG_S3_PREFIX": "s3://db-backup/db/pg18/main-encrypted-v1",
+  "AWS_ENDPOINT": "https://hb.ru-msk.vkcloud-storage.ru",
+  "AWS_REGION": "ru-msk",
+  "AWS_ACCESS_KEY_ID": "xxxxxxxxxxxxxxxxxxxxxxxx",
+  "AWS_SECRET_ACCESS_KEY": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "AWS_S3_FORCE_PATH_STYLE": "true",
+  "WALG_COMPRESSION_METHOD": "zstd",
+  "WALG_UPLOAD_CONCURRENCY": "4",
+  "WALG_PREVENT_WAL_OVERWRITE": "true",
+  "PGHOST": "/var/run/postgresql",
+  "PGPORT": "5432",
+  "PGUSER": "postgres",
+  "PGDATABASE": "postgres",
+  "PGDATA": "/var/lib/postgresql/18/main",
+  "WALG_LIBSODIUM_KEY_PATH": "/etc/wal-g/libsodium-v1.hex",
+  "WALG_LIBSODIUM_KEY_TRANSFORM": "hex"
+}

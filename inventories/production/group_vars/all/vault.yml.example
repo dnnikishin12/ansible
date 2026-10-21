@@ -30,6 +30,21 @@ vault_elastic_password: "ChangeMe-Elastic-Superuser"
 vault_kibana_system_password: "ChangeMe-Kibana-System"
 vault_logstash_internal_password: "ChangeMe-Logstash-Internal"
 
+# WAL-G physical PostgreSQL backups to S3.
+# The libsodium key must be exactly 64 hex characters:
+#   openssl rand -hex 32
+# Store a second copy outside the server. Losing the key makes every
+# encrypted backup unrecoverable.
+vault_walg_s3_access_key_id: "ChangeMe-WALG-Access-Key"
+vault_walg_s3_secret_access_key: "ChangeMe-WALG-Secret-Key"
+vault_walg_libsodium_key: "ChangeMe-64-hex-characters"
+
+# Optional separate credentials for the second WAL-G S3 target. If either is
+# unset, the corresponding primary WAL-G credential above is reused. Set both
+# when the second S3 belongs to another account.
+# vault_walg_secondary_s3_access_key_id: "ChangeMe-WALG-Secondary-Access-Key"
+# vault_walg_secondary_s3_secret_access_key: "ChangeMe-WALG-Secondary-Secret-Key"
+
 # rclone / S3-compatible backup target.
 vault_rclone_s3_endpoint: "https://s3.example.com"
 vault_rclone_s3_access_key_id: "ChangeMe-Access-Key"

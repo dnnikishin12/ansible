@@ -42,7 +42,108 @@ postgres_users: []
 postgres_databases: []
 postgres_privileges: []
 
-postgres_backup_enabled: true
-postgres_backup_dir: "/var/backups/postgresql"
-postgres_backup_keep_days: 7
-postgres_backup_schedule: "*-*-* 01:30:00"
+# ---------------------------------------------------------------------------
+# Physical backups with WAL-G
+# ---------------------------------------------------------------------------
+# WAL-G archives WAL and pushes full/differential base backups to S3. By
+# default every WAL segment and every base backup is written to two independent
+# S3 targets. Only the primary archives; replicas keep archive_mode=off and are
+# protected by streaming replication (or can be rebuilt from the upstream).
+postgres_walg_enabled: true
+postgres_walg_archive_enabled: >-
+  {{ postgres_walg_enabled | bool
+     and inventory_hostname in (groups['postgres_primary'] | default([])) }}
+
+postgres_walg_version: "3.0.9"
+# Release assets exist for Ubuntu 20.04/22.04/24.04. The role targets noble.
+postgres_walg_os_tag: "24.04"
+postgres_walg_arch: >-
+  {{ {'x86_64': 'amd64', 'aarch64': 'aarch64'}.get(ansible_architecture, ansible_architecture) }}
+postgres_walg_asset: "wal-g-pg-{{ postgres_walg_os_tag }}-{{ postgres_walg_arch }}"
+postgres_walg_download_url: >-
+  https://github.com/wal-g/wal-g/releases/download/v{{ postgres_walg_version }}/{{ postgres_walg_asset }}
+postgres_walg_checksums:
+  amd64: "sha256:8015836f246a978f27b31a2462eac7765312558ae5b11ac033322b555abf9e22"
+  aarch64: "sha256:1edd72c3387bfc3a1c19acad9daa36709dbb7cff0642f7044e175d5f8b555d64"
+postgres_walg_checksum: "{{ postgres_walg_checksums[postgres_walg_arch] }}"
+
+postgres_walg_bin: "/usr/local/bin/wal-g"
+postgres_walg_wrapper: "/usr/local/bin/walg"
+postgres_walg_backup_script: "/usr/local/sbin/walg-backup"
+postgres_walg_config_dir: "/etc/wal-g"
+postgres_walg_config_file: "{{ postgres_walg_config_dir }}/config.json"
+postgres_walg_libsodium_key_path: "{{ postgres_walg_config_dir }}/libsodium-v1.hex"
+postgres_walg_lock_file: "/var/lib/postgresql/.walg-backup.lock"
+
+postgres_walg_s3_prefix: "s3://db-backup/db/pg{{ postgres_version }}/main-encrypted-v1"
+postgres_walg_s3_endpoint: "https://hb.ru-msk.vkcloud-storage.ru"
+postgres_walg_s3_region: "ru-msk"
+postgres_walg_s3_force_path_style: true
+postgres_walg_s3_access_key_id: "{{ vault_walg_s3_access_key_id | default('') }}"
+postgres_walg_s3_secret_access_key: "{{ vault_walg_s3_secret_access_key | default('') }}"
+# 64 hex characters (32 bytes), for example from `openssl rand -hex 32`.
+# Losing this key makes every encrypted backup unrecoverable.
+postgres_walg_libsodium_key: "{{ vault_walg_libsodium_key | default('') }}"
+
+# Second, independent S3 copy. The placeholder prefix intentionally fails
+# validation: replace it with a real bucket before deploying. If the second
+# target uses the same credentials as the primary, leave the optional
+# vault_walg_secondary_s3_* variables unset. To run with a single copy, set
+# postgres_walg_secondary_enabled to false (not recommended).
+postgres_walg_secondary_enabled: true
+postgres_walg_secondary_s3_prefix: >-
+  s3://CHANGE-ME-walg-secondary/db/pg{{ postgres_version }}/main-encrypted-v1
+postgres_walg_secondary_s3_endpoint: "{{ postgres_walg_s3_endpoint }}"
+postgres_walg_secondary_s3_region: "{{ postgres_walg_s3_region }}"
+postgres_walg_secondary_s3_force_path_style: "{{ postgres_walg_s3_force_path_style }}"
+postgres_walg_secondary_s3_access_key_id: >-
+  {{ vault_walg_secondary_s3_access_key_id
+     | default(vault_walg_s3_access_key_id | default(''), true) }}
+postgres_walg_secondary_s3_secret_access_key: >-
+  {{ vault_walg_secondary_s3_secret_access_key
+     | default(vault_walg_s3_secret_access_key | default(''), true) }}
+postgres_walg_secondary_config_file: "{{ postgres_walg_config_dir }}/config-secondary.json"
+postgres_walg_secondary_wrapper: "/usr/local/bin/walg-secondary"
+postgres_walg_archive_script: "/usr/local/sbin/walg-archive"
+
+postgres_walg_compression_method: "zstd"
+postgres_walg_upload_concurrency: 4
+postgres_walg_archive_timeout: "60s"
+postgres_walg_delta_max_steps: 7
+postgres_walg_retain_full: 4
+postgres_walg_full_schedule: "Sun *-*-* 02:00:00"
+postgres_walg_diff_schedule: "*-*-* 03:00:00"
+postgres_walg_schedule_timezone: "{{ common_timezone | default('UTC') }}"
+# Run one full backup immediately after the initial deployment. Useful for a
+# new cluster, but keep it false for routine runs.
+postgres_walg_run_initial_backup: false
+
+postgres_walg_config:
+  WALG_S3_PREFIX: "{{ postgres_walg_s3_prefix }}"
+  AWS_ENDPOINT: "{{ postgres_walg_s3_endpoint }}"
+  AWS_REGION: "{{ postgres_walg_s3_region }}"
+  AWS_ACCESS_KEY_ID: "{{ postgres_walg_s3_access_key_id }}"
+  AWS_SECRET_ACCESS_KEY: "{{ postgres_walg_s3_secret_access_key }}"
+  AWS_S3_FORCE_PATH_STYLE: "{{ postgres_walg_s3_force_path_style | bool | lower }}"
+  WALG_COMPRESSION_METHOD: "{{ postgres_walg_compression_method }}"
+  WALG_UPLOAD_CONCURRENCY: "{{ postgres_walg_upload_concurrency | string }}"
+  WALG_PREVENT_WAL_OVERWRITE: "true"
+  PGHOST: "/var/run/postgresql"
+  PGPORT: "{{ postgres_port | string }}"
+  PGUSER: "postgres"
+  PGDATABASE: "postgres"
+  PGDATA: "{{ postgres_data_dir }}"
+  WALG_LIBSODIUM_KEY_PATH: "{{ postgres_walg_libsodium_key_path }}"
+  WALG_LIBSODIUM_KEY_TRANSFORM: "hex"
+
+postgres_walg_secondary_config: >-
+  {{
+    postgres_walg_config | combine({
+      'WALG_S3_PREFIX': postgres_walg_secondary_s3_prefix,
+      'AWS_ENDPOINT': postgres_walg_secondary_s3_endpoint,
+      'AWS_REGION': postgres_walg_secondary_s3_region,
+      'AWS_ACCESS_KEY_ID': postgres_walg_secondary_s3_access_key_id,
+      'AWS_SECRET_ACCESS_KEY': postgres_walg_secondary_s3_secret_access_key,
+      'AWS_S3_FORCE_PATH_STYLE': postgres_walg_secondary_s3_force_path_style | bool | lower,
+    })
+  }}

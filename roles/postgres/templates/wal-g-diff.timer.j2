@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily WAL-G differential backup
+
+[Timer]
+OnCalendar={{ postgres_walg_diff_schedule }} {{ postgres_walg_schedule_timezone }}
+Persistent=true
+Unit=wal-g-backup@diff.service
+
+[Install]
+WantedBy=timers.target
