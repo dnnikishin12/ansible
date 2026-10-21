@@ -20,3 +20,6 @@ provisioning/proxmox/vault.yml
 .idea/
 .vscode/
 *.swp
+
+# Windows Mark-of-the-Web streams
+*Zone.Identifier*
