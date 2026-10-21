@@ -1,2 +1,0 @@
-#!/bin/sh
-exec /usr/local/bin/wal-g --config /etc/wal-g/config.json "$@"
