@@ -16,6 +16,18 @@ max_slot_wal_keep_size = '{{ postgres_max_slot_wal_keep_size }}'
 hot_standby = on
 password_encryption = {{ postgres_password_encryption }}
 
+{% if postgres_tls_enabled | bool %}
+# TLS is mandatory for public traffic: pg_hba.conf uses hostssl for
+# application clients and for the replication user. Replicas connect with
+# sslmode=verify-full.
+ssl = on
+ssl_cert_file = '{{ postgres_tls_cert_path }}'
+ssl_key_file = '{{ postgres_tls_key_path }}'
+ssl_min_protocol_version = '{{ postgres_tls_min_protocol_version }}'
+{% else %}
+ssl = off
+{% endif %}
+
 {% if postgres_walg_archive_enabled | bool %}
 # Archive WAL to S3 with WAL-G. Only the primary archives; a promoted replica
 # needs an inventory/topology update and another role run.

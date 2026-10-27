@@ -1,0 +1,286 @@
+---
+# PostgreSQL server certificates are signed by a private CA generated on the
+# controller. Only the public CA certificate and each host's own certificate
+# and key are copied to the database hosts; the CA private key never leaves
+# the controller.
+#
+# Local certificate generation is marked check_mode: false because the remote
+# copy tasks need the files to exist. This still makes `--check` useful for
+# previewing the remote changes after the first local run.
+
+- name: Ensure the local PostgreSQL TLS directory exists
+  ansible.builtin.file:
+    path: "{{ postgres_tls_local_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  run_once: true
+  check_mode: false
+
+- name: Generate the local PostgreSQL TLS CA private key
+  community.crypto.openssl_privatekey:
+    path: "{{ postgres_tls_local_dir }}/ca.key"
+    type: RSA
+    size: "{{ postgres_tls_key_size | int }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  run_once: true
+  check_mode: false
+
+- name: Generate the local PostgreSQL TLS CA certificate signing request
+  community.crypto.openssl_csr:
+    path: "{{ postgres_tls_local_dir }}/ca.csr"
+    privatekey_path: "{{ postgres_tls_local_dir }}/ca.key"
+    common_name: "{{ postgres_tls_ca_common_name }}"
+    use_common_name_for_san: false
+    basic_constraints:
+      - "CA:TRUE"
+    basic_constraints_critical: true
+    key_usage:
+      - keyCertSign
+      - cRLSign
+    key_usage_critical: true
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  run_once: true
+  check_mode: false
+
+- name: Check the existing local PostgreSQL TLS CA certificate
+  community.crypto.x509_certificate_info:
+    path: "{{ postgres_tls_local_dir }}/ca.crt"
+    valid_at:
+      renew: "{{ postgres_tls_ca_renew_before }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  run_once: true
+  register: postgres_tls_existing_ca
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Define the desired local PostgreSQL TLS CA policy
+  ansible.builtin.set_fact:
+    postgres_tls_ca_policy: "{{ postgres_tls_ca_not_after }}|{{ postgres_tls_key_size }}"
+
+# The policy marker makes lifetime changes take effect immediately. Without
+# it, an existing 10-year CA would remain in place until its 30-day renewal
+# window, even after the configured lifetime was changed.
+- name: Read the local PostgreSQL TLS CA policy marker
+  ansible.builtin.slurp:
+    src: "{{ postgres_tls_local_dir }}/.ca-policy"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  run_once: true
+  register: postgres_tls_ca_policy_marker
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Decide whether the local PostgreSQL TLS CA certificate must be renewed
+  ansible.builtin.set_fact:
+    postgres_tls_ca_force: >-
+      {{ postgres_tls_existing_ca.valid_at is not defined
+         or not (postgres_tls_existing_ca.valid_at.renew | default(false))
+         or postgres_tls_ca_policy_marker.content is not defined
+         or (postgres_tls_ca_policy_marker.content | b64decode | trim) != postgres_tls_ca_policy }}
+
+- name: Generate the local PostgreSQL TLS CA certificate
+  community.crypto.x509_certificate:
+    path: "{{ postgres_tls_local_dir }}/ca.crt"
+    csr_path: "{{ postgres_tls_local_dir }}/ca.csr"
+    privatekey_path: "{{ postgres_tls_local_dir }}/ca.key"
+    provider: selfsigned
+    selfsigned_not_after: "{{ postgres_tls_ca_not_after }}"
+    force: "{{ postgres_tls_ca_force | bool }}"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  run_once: true
+  check_mode: false
+
+- name: Record the local PostgreSQL TLS CA policy
+  ansible.builtin.copy:
+    content: "{{ postgres_tls_ca_policy }}\n"
+    dest: "{{ postgres_tls_local_dir }}/.ca-policy"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  run_once: true
+  check_mode: false
+
+- name: Build the PostgreSQL TLS subject alternative names
+  ansible.builtin.set_fact:
+    postgres_tls_san: >-
+      {{
+        (
+          ['DNS:' ~ inventory_hostname]
+          + [('IP:' if (ansible_host | default(inventory_hostname))
+                 is match('^[0-9]{1,3}([.][0-9]{1,3}){3}$') else 'DNS:')
+             ~ (ansible_host | default(inventory_hostname))]
+          + [('IP:' if postgres_replication_address
+                 is match('^[0-9]{1,3}([.][0-9]{1,3}){3}$') else 'DNS:')
+             ~ postgres_replication_address]
+          + ([('IP:' ~ ansible_default_ipv4.address)]
+             if (ansible_default_ipv4.address | default(''))
+                is match('^[0-9]{1,3}([.][0-9]{1,3}){3}$')
+             else [])
+          + postgres_tls_extra_sans
+        ) | unique | list
+      }}
+
+- name: Define the desired local PostgreSQL TLS certificate policy
+  ansible.builtin.set_fact:
+    postgres_tls_cert_policy: "{{ postgres_tls_cert_not_after }}|{{ postgres_tls_key_size }}"
+
+# This marker is separate from the expiry check. It forces a one-time reissue
+# when the configured lifetime or key size changes, so existing certificates
+# actually become 10-year certificates instead of waiting for their old expiry.
+- name: Read the local PostgreSQL TLS certificate policy marker
+  ansible.builtin.slurp:
+    src: "{{ postgres_tls_local_dir }}/.cert-policy"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  run_once: true
+  register: postgres_tls_cert_policy_marker
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Generate the PostgreSQL server private key
+  community.crypto.openssl_privatekey:
+    path: "{{ postgres_tls_local_dir }}/{{ inventory_hostname }}.key"
+    type: RSA
+    size: "{{ postgres_tls_key_size | int }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  check_mode: false
+
+- name: Generate the PostgreSQL server certificate signing request
+  community.crypto.openssl_csr:
+    path: "{{ postgres_tls_local_dir }}/{{ inventory_hostname }}.csr"
+    privatekey_path: "{{ postgres_tls_local_dir }}/{{ inventory_hostname }}.key"
+    common_name: "{{ inventory_hostname }}"
+    subject_alt_name: "{{ postgres_tls_san }}"
+    use_common_name_for_san: false
+    key_usage:
+      - digitalSignature
+      - keyEncipherment
+    extended_key_usage:
+      - serverAuth
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  check_mode: false
+
+- name: Check the existing PostgreSQL server certificate
+  community.crypto.x509_certificate_info:
+    path: "{{ postgres_tls_local_dir }}/{{ inventory_hostname }}.crt"
+    valid_at:
+      renew: "{{ postgres_tls_cert_renew_before }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  register: postgres_tls_existing_cert
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Decide whether the PostgreSQL server certificate must be renewed
+  ansible.builtin.set_fact:
+    postgres_tls_cert_force: >-
+      {{ postgres_tls_ca_force | bool
+         or postgres_tls_existing_cert.valid_at is not defined
+         or not (postgres_tls_existing_cert.valid_at.renew | default(false))
+         or postgres_tls_cert_policy_marker.content is not defined
+         or (postgres_tls_cert_policy_marker.content | b64decode | trim) != postgres_tls_cert_policy
+         or ((postgres_tls_existing_cert.subject_alt_name | default([], true)) | sort)
+            != (postgres_tls_san | sort) }}
+
+- name: Sign the PostgreSQL server certificate with the local CA
+  community.crypto.x509_certificate:
+    path: "{{ postgres_tls_local_dir }}/{{ inventory_hostname }}.crt"
+    csr_path: "{{ postgres_tls_local_dir }}/{{ inventory_hostname }}.csr"
+    privatekey_path: "{{ postgres_tls_local_dir }}/{{ inventory_hostname }}.key"
+    provider: ownca
+    ownca_path: "{{ postgres_tls_local_dir }}/ca.crt"
+    ownca_privatekey_path: "{{ postgres_tls_local_dir }}/ca.key"
+    ownca_not_after: "{{ postgres_tls_cert_not_after }}"
+    force: "{{ postgres_tls_cert_force | bool }}"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  check_mode: false
+
+- name: Record the local PostgreSQL TLS certificate policy
+  ansible.builtin.copy:
+    content: "{{ postgres_tls_cert_policy }}\n"
+    dest: "{{ postgres_tls_local_dir }}/.cert-policy"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  run_once: true
+  check_mode: false
+
+- name: Ensure the PostgreSQL TLS directory exists
+  ansible.builtin.file:
+    path: "{{ postgres_tls_dir }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0700"
+
+- name: Install the PostgreSQL TLS CA certificate
+  ansible.builtin.copy:
+    src: "{{ postgres_tls_local_dir }}/ca.crt"
+    dest: "{{ postgres_tls_ca_cert_path }}"
+    owner: postgres
+    group: postgres
+    mode: "0644"
+
+- name: Install the PostgreSQL server certificate
+  ansible.builtin.copy:
+    src: "{{ postgres_tls_local_dir }}/{{ inventory_hostname }}.crt"
+    dest: "{{ postgres_tls_cert_path }}"
+    owner: postgres
+    group: postgres
+    mode: "0644"
+  notify: Restart PostgreSQL
+
+- name: Install the PostgreSQL server private key
+  ansible.builtin.copy:
+    src: "{{ postgres_tls_local_dir }}/{{ inventory_hostname }}.key"
+    dest: "{{ postgres_tls_key_path }}"
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  no_log: true
+  notify: Restart PostgreSQL

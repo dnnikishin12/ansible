@@ -18,9 +18,14 @@ vault_gitlab_root_password: "ChangeMe-GitLab-Root-Password"
 # Optional GitLab SMTP password. Leave the example value if SMTP is disabled.
 vault_gitlab_smtp_password: "ChangeMe-GitLab-SMTP-Password"
 
+# GitLab S3 backups (VK Cloud Object Storage).
+vault_gitlab_backup_s3_access_key_id: "ChangeMe-GitLab-S3-Access-Key"
+vault_gitlab_backup_s3_secret_access_key: "ChangeMe-GitLab-S3-Secret-Key"
+
 # PostgreSQL replication and application credentials.
 vault_postgres_replication_password: "ChangeMe-Postgres-Replication"
 vault_postgres_app_password: "ChangeMe-Postgres-App"
+vault_postgres_admin_password: "ChangeMe-Postgres-Admin"
 
 # Valkey requirepass value.
 vault_valkey_password: "ChangeMe-Valkey-Password"
@@ -35,15 +40,15 @@ vault_logstash_internal_password: "ChangeMe-Logstash-Internal"
 #   openssl rand -hex 32
 # Store a second copy outside the server. Losing the key makes every
 # encrypted backup unrecoverable.
-vault_walg_s3_access_key_id: "ChangeMe-WALG-Access-Key"
-vault_walg_s3_secret_access_key: "ChangeMe-WALG-Secret-Key"
+# Primary target: VK Cloud Object Storage.
+vault_walg_s3_access_key_id: "ChangeMe-WALG-VK-Access-Key"
+vault_walg_s3_secret_access_key: "ChangeMe-WALG-VK-Secret-Key"
 vault_walg_libsodium_key: "ChangeMe-64-hex-characters"
 
-# Optional separate credentials for the second WAL-G S3 target. If either is
-# unset, the corresponding primary WAL-G credential above is reused. Set both
-# when the second S3 belongs to another account.
-# vault_walg_secondary_s3_access_key_id: "ChangeMe-WALG-Secondary-Access-Key"
-# vault_walg_secondary_s3_secret_access_key: "ChangeMe-WALG-Secondary-Secret-Key"
+# Secondary target: Yandex Cloud Object Storage. Both values are required
+# because the second cloud uses a separate service account.
+vault_walg_secondary_s3_access_key_id: "ChangeMe-WALG-Yandex-Access-Key"
+vault_walg_secondary_s3_secret_access_key: "ChangeMe-WALG-Yandex-Secret-Key"
 
 # rclone / S3-compatible backup target.
 vault_rclone_s3_endpoint: "https://s3.example.com"

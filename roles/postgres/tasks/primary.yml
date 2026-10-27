@@ -26,6 +26,16 @@
   become_user: postgres
   no_log: true
 
+- name: Grant application role memberships
+  community.postgresql.postgresql_membership:
+    memberships: "{{ postgres_memberships }}"
+    state: present
+    login_user: postgres
+    login_unix_socket: /var/run/postgresql
+  when: postgres_memberships | length > 0
+  become: true
+  become_user: postgres
+
 - name: Create application databases
   community.postgresql.postgresql_db:
     name: "{{ item.name }}"

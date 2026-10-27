@@ -65,7 +65,11 @@ common_firewall_default_incoming: "deny"
 common_firewall_default_outgoing: "allow"
 common_firewall_ssh_sources:
   - "0.0.0.0/0"
+  - "::/0"
 common_firewall_rules: []
+# Rules with multiple allowed sources, for example Logstash Beats input.
+# Each item: {port, proto, sources: [ip, ...]}.
+common_firewall_source_rules: []
 
 common_sysctl:
   vm.swappiness: 10

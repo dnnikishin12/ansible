@@ -56,17 +56,21 @@
         )
       }}
 
-- name: Define replication connection settings
+- name: Determine the upstream replication address
   ansible.builtin.set_fact:
     postgres_upstream_host: >-
       {{ hostvars[postgres_upstream].postgres_replication_address
          | default(hostvars[postgres_upstream].ansible_host, true) }}
+
+- name: Define replication connection settings
+  ansible.builtin.set_fact:
     postgres_replication_slot: "{{ postgres_replication_slot_prefix }}{{ inventory_hostname | replace('-', '_') }}"
     postgres_replication_conninfo: >-
       host={{ postgres_upstream_host }}
       port={{ postgres_port }}
       user={{ postgres_replication_user }}
       application_name={{ inventory_hostname }}
+      {{ postgres_replication_ssl_settings }}
       passfile=/var/lib/postgresql/.pgpass
 
 # The role does not silently rewrite an existing standby: switching a replica
@@ -105,10 +109,18 @@
         that:
           - postgres_existing_conninfo is succeeded
           - postgres_existing_slot is succeeded
+          # Allow the initial switch from the management address to the public
+          # postgres_replication_address. The in-place alter_system task below
+          # rewrites primary_conninfo; any other upstream change still
+          # requires an explicit rebuild.
           - >-
-            ('host=' ~ postgres_upstream_host ~ ' ')
-            in (((postgres_existing_conninfo.query_result | default([{}]))[0].primary_conninfo
-                 | default('')) ~ ' ')
+            (('host=' ~ postgres_upstream_host ~ ' ')
+             in (((postgres_existing_conninfo.query_result | default([{}]))[0].primary_conninfo
+                  | default('')) ~ ' '))
+            or
+            (('host=' ~ (hostvars[postgres_upstream].ansible_host | default('')) ~ ' ')
+             in (((postgres_existing_conninfo.query_result | default([{}]))[0].primary_conninfo
+                  | default('')) ~ ' '))
           - >-
             ((postgres_existing_slot.query_result | default([{}]))[0].primary_slot_name
              | default('')) == postgres_replication_slot
@@ -117,6 +129,22 @@
           slot {{ postgres_replication_slot }}. Set postgres_replica_rebuild:
           true to rebuild it from the configured upstream, or update
           primary_conninfo/primary_slot_name manually and restart PostgreSQL.
+
+# Existing standbys may use the old management address or pre-TLS connection
+# settings. Update their primary_conninfo in place; this does not require a
+# rebuild. The module compares the desired value with pg_settings and reloads
+# PostgreSQL only when the value actually changes.
+- name: Ensure an existing replica uses the configured TLS settings
+  community.postgresql.postgresql_alter_system:
+    param: primary_conninfo
+    value: "{{ postgres_replication_conninfo }}"
+    login_user: postgres
+    login_unix_socket: /var/run/postgresql
+  become: true
+  become_user: postgres
+  when:
+    - postgres_replica_data.stat.exists
+    - not postgres_replica_needs_bootstrap | bool
 
 - name: Deploy the replication password file
   ansible.builtin.template:
@@ -166,8 +194,7 @@
           - "-R"
           - "--checkpoint=fast"
           - "--slot={{ postgres_replication_slot }}"
-      environment:
-        PGPASSFILE: /var/lib/postgresql/.pgpass
+      environment: "{{ postgres_replication_env }}"
       become: true
       become_user: postgres
       no_log: true

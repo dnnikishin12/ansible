@@ -1,11 +1,22 @@
 ---
-- name: Install the Elastic signing key
+- name: Download the Elastic signing key
   ansible.builtin.get_url:
     url: "{{ elastic_stack_gpg_key_url }}"
-    dest: "{{ elastic_stack_gpg_key_path }}"
+    dest: "{{ elastic_stack_gpg_key_asc_path }}"
     owner: root
     group: root
     mode: "0644"
+
+- name: Dearmor the Elastic signing key
+  ansible.builtin.command:
+    argv:
+      - gpg
+      - --dearmor
+      - --yes
+      - --output
+      - "{{ elastic_stack_gpg_key_path }}"
+      - "{{ elastic_stack_gpg_key_asc_path }}"
+  changed_when: false
 
 - name: Add the Elastic apt repository
   ansible.builtin.apt_repository:
@@ -20,7 +31,7 @@
   ansible.builtin.copy:
     content: |
       Package: elasticsearch kibana logstash filebeat
-      Pin: origin artifacts.elastic.co
+      Pin: origin {{ elastic_stack_repo_url | urlsplit('hostname') }}
       Pin-Priority: 1001
     dest: /etc/apt/preferences.d/elastic
     owner: root

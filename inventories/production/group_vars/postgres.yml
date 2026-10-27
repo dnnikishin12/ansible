@@ -1,8 +1,48 @@
 ---
+# PostgreSQL hosts are managed over SSH as the pre-provisioned ansible user.
+# IPQoS=0 is required for pg03: its cloud network drops SSH packets with the
+# non-zero DSCP markings that OpenSSH sets by default.
+ansible_user: "ansible"
+ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new -o IPQoS=0"
+
 postgres_version: "18"
 postgres_port: 5432
-postgres_client_networks:
-  - "{{ internal_network }}"
+# PostgreSQL is reachable only through public addresses. Listen on all
+# interfaces so the public/NAT address is available; UFW and pg_hba still
+# restrict every port to the explicit public sources below.
+postgres_listen_addresses: "0.0.0.0"
+
+# Public source CIDRs of application hosts. These are the addresses that
+# PostgreSQL sees after the connection crosses the internet; all VM addresses
+# are public. The rules follow ansible_host, so changing a host address in
+# hosts.yml also updates pg_hba/UFW. If a host uses a separate NAT egress,
+# replace the corresponding hostvars value below with that public /32.
+#
+# Only production application hosts may open PostgreSQL connections. The test
+# Docker host is deliberately excluded.
+#
+# 95.163.209.96 is an external Node.js/pgAdmin server that is not provisioned
+# by this repository, so it has no inventory entry; its public address is
+# listed literally here. If that host is moved or uses a separate NAT egress,
+# change this /32 accordingly.
+postgres_app_client_rules:
+  - port: "5432"
+    proto: "tcp"
+    from: "{{ hostvars['docker-prod-01'].ansible_host }}/32"
+  - port: "5432"
+    proto: "tcp"
+    from: "{{ hostvars['docker-prod-02'].ansible_host }}/32"
+  - port: "5432"
+    proto: "tcp"
+    from: "95.163.209.96/32"
+
+# Every PostgreSQL server exposes applications only to production hosts.
+# Replicas add their own replication-only source rules in host_vars.
+postgres_client_networks: "{{ postgres_app_client_rules | map(attribute='from') | list }}"
+
+# Base UFW rule for every PostgreSQL server. Host vars append replication
+# sources; pg01 also has the Valkey rules.
+firewall_extra_rules: "{{ postgres_app_client_rules }}"
 
 # pg01 -> pg02 -> pg03. pg03 is in another cloud and must not connect to pg01
 # directly. Slots are created on each direct upstream: replica_pg02 on pg01 and
@@ -12,33 +52,55 @@ postgres_replication_topology:
   pg02: pg01
   pg03: pg02
 
-# Application databases/users are intentionally empty by default. Add entries
-# here once the application schema is known, for example:
-#
-# postgres_users:
-#   - name: app
-#     password: "{{ vault_postgres_app_password }}"
-#     role_attr_flags: "LOGIN"
-# postgres_databases:
-#   - name: app
-#     owner: app
-#     encoding: "UTF-8"
-postgres_users: []
-postgres_databases: []
+# Replication and application connections are encrypted with certificates
+# signed by a private CA generated on the controller (files/postgres-tls/).
+# Keep that directory backed up, especially ca.key: without it existing
+# certificates cannot be renewed with the same trust anchor.
+postgres_tls_enabled: true
+postgres_replication_sslmode: "verify-full"
+
+# Test application database. It is replicated to pg02 by streaming
+# replication; writes are only accepted on the primary.
+postgres_users:
+  - name: testuser
+    password: "{{ vault_postgres_app_password }}"
+    role_attr_flags: "LOGIN"
+  # Administrative role for pgAdmin. CREATEDB/CREATEROLE allow creating
+  # databases and roles; membership in testuser (below) lets it manage the
+  # existing application database without making it the owner.
+  - name: dbadmin
+    password: "{{ vault_postgres_admin_password }}"
+    role_attr_flags: "LOGIN,CREATEDB,CREATEROLE"
+postgres_databases:
+  - name: testdb
+    owner: testuser
+    encoding: "UTF-8"
 postgres_privileges: []
 
+# Role memberships applied on the primary. dbadmin is a member of testuser so
+# it can create objects and grant privileges in testdb; testuser remains the
+# database owner.
+postgres_memberships:
+  - groups:
+      - testuser
+    target_roles:
+      - dbadmin
+
+# WAL-G physical backups. Every WAL segment is pushed to VK Cloud and Yandex
+# Cloud independently; base backups are created on the primary in VK Cloud and
+# then copied to Yandex Cloud by `wal-g copy`. Credentials live in the vault:
+#   vault_walg_s3_*             -> VK Cloud
+#   vault_walg_secondary_s3_*   -> Yandex Cloud
+# The libsodium encryption key is shared by both copies and is required for
+# restore; losing it makes every encrypted backup unreadable.
 postgres_walg_enabled: true
-postgres_walg_s3_prefix: "s3://db-backup/db/pg{{ postgres_version }}/main-encrypted-v1"
+postgres_walg_s3_prefix: "s3://tlcamp-db-backup/db/pg{{ postgres_version }}/main-encrypted-v1"
 postgres_walg_s3_endpoint: "https://hb.ru-msk.vkcloud-storage.ru"
 postgres_walg_s3_region: "ru-msk"
-# Two copies are required. Replace the placeholder secondary prefix with a
-# real bucket (the role rejects CHANGE-ME). If the second S3 uses another
-# account, also set vault_walg_secondary_s3_access_key_id and
-# vault_walg_secondary_s3_secret_access_key in the vault; otherwise the
-# primary WAL-G credentials are reused.
 postgres_walg_secondary_enabled: true
-# postgres_walg_secondary_s3_prefix: "s3://CHANGE-ME-secondary-bucket/db/pg{{ postgres_version }}/main-encrypted-v1"
-# postgres_walg_secondary_s3_endpoint: "https://hb.ru-msk.vkcloud-storage.ru"
-# postgres_walg_secondary_s3_region: "ru-msk"
+# The bucket has the same name in both clouds; the endpoint selects the cloud.
+postgres_walg_secondary_s3_prefix: "s3://tlcamp-db-backup/db/pg{{ postgres_version }}/main-encrypted-v1"
+postgres_walg_secondary_s3_endpoint: "https://storage.yandexcloud.net"
+postgres_walg_secondary_s3_region: "ru-central1"
 postgres_walg_full_schedule: "Sun *-*-* 02:00:00"
 postgres_walg_diff_schedule: "*-*-* 03:00:00"

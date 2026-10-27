@@ -30,17 +30,75 @@ postgres_replica_rebuild: false
 # directly to the first host in postgres_primary. A cascading topology is
 # defined explicitly, for example: {pg02: pg01, pg03: pg02}.
 postgres_replication_topology: {}
-# Address that downstream replicas use to reach this host. Override it when
-# the inventory address is not reachable from another cloud.
+# Public address that application clients and downstream replicas use to reach
+# this host. PostgreSQL traffic never uses the private/internal network, so
+# every PostgreSQL host must set this to its public or NAT/egress address.
 postgres_replication_address: "{{ ansible_host | default(ansible_default_ipv4.address | default('127.0.0.1')) }}"
-# Source CIDR that this host presents to its upstream. Override it when the
-# host is behind NAT and its egress address differs from its interface address.
+# Public source CIDR that this host presents to its upstream. Override it when
+# the host is behind NAT and its egress address differs from its interface
+# address. It is written to pg_hba.conf and UFW rules on the upstream.
 postgres_replication_source_cidr: "{{ (ansible_default_ipv4.address | default(ansible_host | default('127.0.0.1'))) ~ '/32' }}"
 
+# ---------------------------------------------------------------------------
+# TLS for PostgreSQL client/server and replication connections
+# ---------------------------------------------------------------------------
+# The role creates a private CA on the controller and signs one server
+# certificate per PostgreSQL host. The certificate SANs include the inventory
+# hostname, ansible_host, postgres_replication_address and the default IPv4
+# address. This is what allows sslmode=verify-full when an application or a
+# replica connects to a public address.
+#
+# The local directory contains the CA private key. It is ignored by Git and
+# must be backed up: if it is lost, a new CA is generated and every PostgreSQL
+# host must be re-run to receive certificates signed by the new CA.
+postgres_tls_enabled: true
+postgres_tls_dir: "{{ postgres_conf_dir }}/tls"
+postgres_tls_cert_path: "{{ postgres_tls_dir }}/server.crt"
+postgres_tls_key_path: "{{ postgres_tls_dir }}/server.key"
+postgres_tls_ca_cert_path: "{{ postgres_tls_dir }}/ca.crt"
+postgres_tls_local_dir: "{{ playbook_dir }}/../files/postgres-tls"
+postgres_tls_ca_common_name: "TLCamp PostgreSQL Root CA"
+# The CA outlives the server certificates. The CA is 20 years and each server
+# certificate is 10 years; both are reissued automatically when the renewal
+# window is reached during a role run.
+postgres_tls_ca_not_after: "+7300d"
+postgres_tls_cert_not_after: "+3650d"
+# Renew certificates before they expire. x509_certificate ignores timestamps
+# for idempotency, so the role explicitly checks these windows. The role is
+# lazy: run it periodically (for example, weekly via `make postgres-tls`) so
+# that the check actually happens.
+postgres_tls_ca_renew_before: "+30d"
+postgres_tls_cert_renew_before: "+30d"
+postgres_tls_key_size: 3072
+postgres_tls_min_protocol_version: "TLSv1.2"
+# Extra SAN entries, already prefixed with DNS: or IP:, for example:
+#   postgres_tls_extra_sans:
+#     - "DNS:pg02.db.example.com"
+postgres_tls_extra_sans: []
+postgres_replication_sslmode: "verify-full"
+
+# Connection-string fragment and libpq environment used by the WAL receiver
+# and pg_basebackup. Empty when TLS is disabled.
+postgres_replication_ssl_settings: >-
+  {{ ('sslmode=' ~ postgres_replication_sslmode ~ ' sslrootcert=' ~ postgres_tls_ca_cert_path)
+     if postgres_tls_enabled | bool else '' }}
+postgres_replication_env: >-
+  {{ {'PGPASSFILE': '/var/lib/postgresql/.pgpass'}
+     | combine({'PGSSLMODE': postgres_replication_sslmode,
+                'PGSSLROOTCERT': postgres_tls_ca_cert_path}
+               if postgres_tls_enabled | bool else {}) }}
+
+# Public source CIDRs of application hosts. Remote client rules in pg_hba.conf
+# use hostssl when TLS is enabled; do not put private/internal networks here.
 postgres_client_networks: []
 postgres_users: []
 postgres_databases: []
 postgres_privileges: []
+# Role memberships to grant on the primary, for example:
+#   postgres_memberships:
+#     - groups: [app]
+#       target_roles: [dbadmin]
+postgres_memberships: []
 
 # ---------------------------------------------------------------------------
 # Physical backups with WAL-G

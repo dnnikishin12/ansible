@@ -1,0 +1,9 @@
+# Managed by Ansible
+[{{ gitlab_backup_rclone_remote }}]
+type = s3
+provider = Other
+access_key_id = {{ gitlab_backup_s3_access_key_id }}
+secret_access_key = {{ gitlab_backup_s3_secret_access_key }}
+endpoint = {{ gitlab_backup_s3_endpoint }}
+region = {{ gitlab_backup_s3_region }}
+force_path_style = {{ gitlab_backup_rclone_force_path_style | bool | lower }}

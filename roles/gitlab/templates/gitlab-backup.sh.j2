@@ -4,12 +4,66 @@ set -euo pipefail
 umask 077
 
 backup_dir="{{ gitlab_backup_dir }}"
-stamp="$(date +%Y-%m-%d)"
+stamp="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+day="$(date -u +%Y-%m-%d)"
+rclone_config="{{ gitlab_backup_rclone_config }}"
+rclone_remote="{{ gitlab_backup_rclone_remote }}"
+s3_bucket="{{ gitlab_backup_s3_bucket }}"
+s3_prefix="{{ gitlab_backup_s3_prefix }}"
+s3_root="${rclone_remote}:${s3_bucket}/${s3_prefix}"
+s3_dest="${s3_root}/${stamp}"
 
 install -d -o git -g git -m 0700 "$backup_dir"
+
 GITLAB_ASSUME_YES=1 /opt/gitlab/bin/gitlab-backup create CRON=1 STRATEGY=copy
 
-install -m 0600 /etc/gitlab/gitlab.rb "${backup_dir}/gitlab.rb.${stamp}"
-install -m 0600 /etc/gitlab/gitlab-secrets.json "${backup_dir}/gitlab-secrets.json.${stamp}"
+install -m 0600 /etc/gitlab/gitlab.rb "${backup_dir}/gitlab.rb.${day}"
+install -m 0600 /etc/gitlab/gitlab-secrets.json "${backup_dir}/gitlab-secrets.json.${day}"
 
-find "$backup_dir" -maxdepth 1 -type f -mtime +{{ gitlab_backup_keep_days }} -delete
+archive="$(find "$backup_dir" -maxdepth 1 -type f \
+  -name '*_gitlab_backup.tar' -printf '%T@ %p\n' \
+  | sort -nr | head -n 1 | cut -d' ' -f 2-)"
+
+if [[ -z "$archive" ]]; then
+  echo "GitLab backup archive not found" >&2
+  exit 1
+fi
+
+dpkg-query -W -f='${Package} ${Version}\n' gitlab-ce \
+  > "${backup_dir}/gitlab-version.${day}.txt"
+
+(
+  cd "$backup_dir"
+  sha256sum \
+    "$(basename "$archive")" \
+    "gitlab.rb.${day}" \
+    "gitlab-secrets.json.${day}" \
+    "gitlab-version.${day}.txt" \
+    > "SHA256SUMS.${day}"
+)
+
+if [[ "{{ gitlab_backup_s3_enabled | bool | ternary('true', 'false') }}" == "true" ]]; then
+  for file in \
+    "$(basename "$archive")" \
+    "gitlab.rb.${day}" \
+    "gitlab-secrets.json.${day}" \
+    "gitlab-version.${day}.txt" \
+    "SHA256SUMS.${day}"; do
+    rclone copy "${backup_dir}/${file}" "${s3_dest}/" \
+      --config "$rclone_config" \
+      --transfers 1 \
+      --s3-chunk-size 64M \
+      --stats-one-line
+  done
+
+  rclone ls "$s3_dest" --config "$rclone_config"
+
+  if [[ "{{ gitlab_backup_s3_keep_days | int }}" -gt 0 ]]; then
+    rclone delete "$s3_root" \
+      --min-age "{{ gitlab_backup_s3_keep_days | int }}d" \
+      --config "$rclone_config"
+    rclone rmdirs "$s3_root" --leave-root --config "$rclone_config" || true
+  fi
+fi
+
+find "$backup_dir" -maxdepth 1 -type f -mtime +{{ gitlab_backup_keep_days | int }} -delete

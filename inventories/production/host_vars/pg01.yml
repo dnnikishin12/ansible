@@ -1,10 +1,27 @@
 ---
+# Public address of the primary. Application hosts and pg02 use this address;
+# it is included in the server certificate SAN automatically.
+postgres_replication_address: "176.53.238.140"
+
 # pg01 belongs to both postgres_primary and valkey groups. Keeping firewall
-# rules here avoids one group overriding the other.
-firewall_extra_rules:
-  - port: "5432"
-    proto: "tcp"
-    from: "{{ internal_network }}"
-  - port: "6379"
-    proto: "tcp"
-    from: "{{ internal_network }}"
+# rules here avoids one group overriding the other. PostgreSQL accepts only
+# the explicit public application CIDRs and pg02's public replication source.
+firewall_extra_rules: >-
+  {{
+    postgres_app_client_rules
+    + [
+        {
+          'port': '5432',
+          'proto': 'tcp',
+          'from': hostvars['pg02'].postgres_replication_source_cidr
+        },
+        {
+          'port': '6379',
+          'proto': 'tcp',
+          'from': hostvars['docker-prod-01'].ansible_host ~ '/32'
+        }
+      ]
+  }}
+# Valkey has no TLS. It is reachable over the public network only from the
+# first-cloud Docker hosts above; it is intentionally not exposed to
+# docker-prod-02 in the second cloud. Enable TLS before allowing it there.

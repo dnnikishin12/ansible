@@ -5,7 +5,8 @@ Playbook-и для развёртывания и сопровождения де
 
 - GitLab CE;
 - PostgreSQL 18: primary, реплика первого уровня и каскадная реплика во
-  втором облаке;
+  втором облаке; все клиентские и репликационные подключения идут по
+  публичным IP и защищены TLS;
 - Valkey на хосте primary;
 - два production-хоста Docker и один test-хост Docker;
 - Elasticsearch + Logstash + Kibana;
@@ -44,108 +45,149 @@ Valkey и Elastic Stack устанавливаются и настраивают
 
 ### Виртуальные машины
 
-Сеть и домен ниже — **placeholder**: `10.10.10.0/24` для облака Proxmox и
-`203.0.113.0/24` для `pg03` во втором облаке. Замените их на свои в
-`inventories/production/hosts.yml` и
-`inventories/production/group_vars/all/main.yml`.
+Все ВМ в проекте имеют **публичные адреса**. `203.0.113.0/24` ниже —
+placeholder: замените каждый `ansible_host` на реальный публичный IP.
+Приватной management-сети нет, поэтому Ansible, межсервисный трафик и
+PostgreSQL используют одни и те же публичные адреса.
 
-| ВМ | IP | Роль | vCPU / RAM / диск |
+Провижининг через Proxmox **не запускается по умолчанию**: `make site`
+работает с уже существующими ВМ. `make provision` — отдельная опциональная
+команда для Proxmox.
+
+| ВМ | Публичный IP | Роль | vCPU / RAM / диск |
 |---|---|---|---|
-| `gitlab01` | `10.10.10.11` | GitLab CE, встроенный nginx на `:80` | 4 / 8 ГБ / 100 ГБ |
-| `pg01` | `10.10.10.12` | PostgreSQL 18 primary + Valkey | 4 / 16 ГБ / 200 ГБ |
-| `pg02` | `10.10.10.13` | PostgreSQL 18 реплика первого уровня, upstream для `pg03` | 4 / 16 ГБ / 200 ГБ |
+| `gitlab01` | `203.0.113.11` | GitLab CE, встроенный nginx на `:80`/`:443` | 4 / 8 ГБ / 100 ГБ |
+| `pg01` | `203.0.113.12` | PostgreSQL 18 primary + Valkey | 4 / 16 ГБ / 200 ГБ |
+| `pg02` | `203.0.113.13` | PostgreSQL 18 реплика первого уровня, upstream для `pg03` | 4 / 16 ГБ / 200 ГБ |
 | `pg03` | `203.0.113.14` | PostgreSQL 18 каскадная реплика во втором облаке | 4 / 16 ГБ / 200 ГБ |
-| `docker-prod-01` | `10.10.10.15` | Docker Engine, production | 4 / 8 ГБ / 100 ГБ |
-| `docker-prod-02` | `10.10.10.16` | Docker Engine, production | 4 / 8 ГБ / 100 ГБ |
-| `docker-test-01` | `10.10.10.17` | Docker Engine, test | 6 / 8 ГБ / 128 ГБ |
-| `elk01` | `10.10.10.18` | Elasticsearch, Logstash, Kibana | 4 / 16 ГБ / 200 ГБ |
-| `nginx01` | `10.10.10.19` | nginx, TLS-терминация | 2 / 2 ГБ / 40 ГБ |
-| `maint01` | `10.10.10.20` | rclone, backup jobs | 2 / 2 ГБ / 50 ГБ |
+| `docker-prod-01` | `203.0.113.15` | Docker Engine, production | 4 / 8 ГБ / 100 ГБ |
+| `docker-prod-02` | `203.0.113.16` | Docker Engine, production во втором облаке | 4 / 8 ГБ / 100 ГБ |
+| `docker-test-01` | `203.0.113.17` | Docker Engine, test | 6 / 8 ГБ / 128 ГБ |
+| `elk01` | `203.0.113.18` | Elasticsearch, Logstash, Kibana | 4 / 16 ГБ / 200 ГБ |
+| `nginx01` | `203.0.113.19` | nginx, TLS-терминация | 2 / 2 ГБ / 40 ГБ |
+| `maint01` | `203.0.113.20` | rclone, backup jobs | 2 / 2 ГБ / 50 ГБ |
 
 В исходном `vmlist` явно задан размер только тестового Docker-хоста
 (`6cpu-8Gb-128SSD`). Остальные размеры — разумные стартовые значения; их нужно
-скорректировать под реальную нагрузку в `provisioning/proxmox/vars.yml`.
-Размер `pg03` задаётся отдельно во втором облаке.
+скорректировать под реальную нагрузку. Размеры `pg03` и `docker-prod-02`
+задаются отдельно во втором облаке.
+
+PostgreSQL использует те же публичные адреса, что и остальные сервисы:
+`postgres_replication_address` в `host_vars/pg01.yml`, `host_vars/pg02.yml` и
+`host_vars/pg03.yml` совпадает с `ansible_host`. Публичный адрес входит в SAN
+сертификата автоматически.
+
+> Предполагается, что `docker-prod-02` — это вторая production-машина во
+> втором облаке. Если это отдельный новый хост, добавьте его в `hosts.yml` и
+> `postgres_app_client_rules`; `docker-prod-02` можно вернуть в
+> `provisioning/proxmox/vars.yml`, если он создаётся в Proxmox.
 
 ### Потоки трафика
 
 ```text
-                 ┌──────────────────────┐
-   HTTPS :443    │       nginx01        │
-  ──────────────▶│  TLS termination     │
-                 └───────┬──────┬───────┘
-                         │      │
-             HTTP :80    │      │    HTTP :5601
-                         ▼      ▼
-                   ┌─────────┐  ┌────────────┐
-                   │gitlab01 │  │   elk01    │
-                   │ GitLab  │  │  Kibana    │
-                   └─────────┘  └────────────┘
+   HTTPS :443  ──▶ gitlab01 (GitLab, TLS + Let's Encrypt)
+   HTTPS :443  ──▶ elk01    (Kibana, TLS + Let's Encrypt)
 
-  Filebeat (все хосты, кроме elk01) ──▶ Logstash :5044 на elk01
-  PostgreSQL pg01 ──streaming──▶ pg02 ──streaming──▶ pg03
-             (Proxmox)                (второе облако)
-  Docker-хосты ──▶ PostgreSQL :5432 / Valkey :6379 на pg01
+  Filebeat (все хосты, кроме elk01) ──▶ Logstash :5044 на elk01 (public)
+  PostgreSQL pg01 ──streaming (TLS/public)──▶ pg02
+  pg02 ──streaming (TLS/public)──▶ pg03 (второе облако)
+  Docker prod hosts + внешний app/pgAdmin 95.163.209.96 ──TLS/public──▶ PostgreSQL :5432
+  Docker hosts ──public/restricted──▶ Valkey :6379 на pg01 (без TLS)
 ```
 
-- nginx принимает внешний HTTPS и проксирует GitLab и Kibana.
-- GitLab и Kibana наружу не публикуются: UFW разрешает их порты только с
-  `nginx01`, а Kibana слушает внутренний адрес.
-- PostgreSQL реплицируется каскадом: `pg01` → `pg02` внутри Proxmox,
-  `pg02` → `pg03` через межоблачную сеть. `pg03` не подключается к `pg01`
-  напрямую.
+- GitLab и Kibana опубликованы напрямую: DNS указывает на `gitlab01` и
+  `elk01`, TLS завершается на самих сервисах. GitLab использует встроенный
+  nginx и Let's Encrypt; Kibana слушает `:443` и получает сертификат через
+  certbot.
+- `nginx01` остаётся отдельным хостом для других задач и не участвует в
+  публикации GitLab/Kibana.
+- PostgreSQL реплицируется каскадом: `pg01` → `pg02`, затем
+  `pg02` → `pg03`. Оба соединения идут по публичным IP и защищены TLS;
+  `pg03` не подключается к `pg01` напрямую.
+- Приложения подключаются к публичному адресу `pg01` с `sslmode=verify-full`.
+  UFW и `pg_hba.conf` разрешают только перечисленные публичные `/32`, в том
+  числе внешний Node.js/pgAdmin-сервер `95.163.209.96`, который не входит в
+  inventory.
 - Physical replication slots создаются на непосредственном upstream:
   `replica_pg02` на `pg01` и `replica_pg03` на `pg02`.
+- Valkey не имеет TLS. UFW разрешает `6379` только с публичных адресов
+  `docker-prod-01` и `docker-test-01`; `docker-prod-02` во втором облаке
+  намеренно не допускается, пока для Valkey не включён TLS.
 - Filebeat отправляет системные логи, логи nginx, Docker, GitLab и PostgreSQL
-  в Logstash на `elk01`. Сам `elk01` исключён из группы `log_shippers`, чтобы
-  не отправлять логи самому себе.
+  в Logstash на `elk01` по публичной сети. UFW на `elk01` разрешает `5044`
+  только с публичных адресов хостов группы `log_shippers`. Сам `elk01`
+  исключён из группы, чтобы не отправлять логи самому себе.
 
 ## Что заменить перед запуском
 
 В репозитории намеренно оставлены значения-заглушки. Перед первым запуском
 замените:
 
-1. **IP-адреса** в `inventories/production/hosts.yml` и
-   `provisioning/proxmox/vars.yml`. Для ВМ из Proxmox они должны совпадать.
-   `pg03` находится во втором облаке и в `proxmox_vms` намеренно отсутствует.
+1. **Публичные IP-адреса** в `inventories/production/hosts.yml`. Замените
+   все `203.0.113.x` на реальные публичные адреса ВМ. Если используете
+   опциональный Proxmox provisioning, обновите те же адреса, шлюз и
+   nameserver в `provisioning/proxmox/vars.yml`. `pg03` и `docker-prod-02`
+   находятся во втором облаке и в `proxmox_vms` намеренно отсутствуют.
+   `postgres_replication_address` в `host_vars/pg01.yml`, `host_vars/pg02.yml`
+   и `host_vars/pg03.yml` должен совпадать с публичным `ansible_host`.
 2. **Домен** `campbox.tech` в
    `inventories/production/group_vars/all/main.yml`
-   (`internal_domain`, `gitlab_hostname`, `kibana_hostname`) и
-   `proxmox_searchdomain` в `provisioning/proxmox/vars.yml`.
-3. **Сети** `10.10.10.0/24` и `203.0.113.0/24`, шлюз `10.10.10.1` в
-   group_vars и `provisioning/proxmox/vars.yml` (для второго облака —
-   в его собственной конфигурации).
+   (`internal_domain`, `gitlab_hostname` = `gitlab-test.<domain>`,
+   `kibana_hostname` = `elastik.<domain>`) и `proxmox_searchdomain` в
+   `provisioning/proxmox/vars.yml`. DNS-записи этих имён должны указывать на
+   публичные адреса `gitlab01` и `elk01`.
+3. **План адресации**: `203.0.113.0/24` — только placeholder. Публичной
+   management-сети нет; замените адреса ВМ на реальные публичные. Если
+   используете Proxmox, задайте там реальный публичный шлюз.
 4. **Часовой пояс и NTP-серверы**: `common_timezone`, `common_ntp_servers`.
-5. **SSH-доступ**: `ansible_user` (по умолчанию `ubuntu`) и
-   `common_firewall_ssh_sources`. Не оставляйте SSH открытым только из
-   `10.10.10.0/24`, если запускаете Ansible из другой сети. Для `pg03`
-   placeholder сети управления находится в
-   `group_vars/postgres_cascading.yml`; замените его до bootstrap. Если меняете
-   `common_ssh_port`, задайте соответствующий `ansible_port` в inventory.
-6. **Межоблачную репликацию**: в `host_vars/pg02.yml` задайте
-   `postgres_replication_address` — адрес `pg02`, доступный из второго облака
-   (публичный IP, NAT или VPN). В `group_vars/postgres_cascading.yml` задайте
-   `postgres_replication_source_cidr` — исходный адрес/подсеть `pg03`, который
-   видит `pg02`. При необходимости измените `postgres_listen_addresses` на
-   `pg02`.
+5. **SSH-доступ**: SSH намеренно открыт с любых IPv4/IPv6-адресов
+   (`common_firewall_ssh_sources` = `0.0.0.0/0`, `::/0`). Пароли отключены,
+   используется только ключ. `common_fail2ban_ignoreips` пуст, поэтому
+   fail2ban банит перебор со всех адресов; стандартное исключение — только
+   loopback `127.0.0.1/8` и `::1`. Если меняете `common_ssh_port`, задайте
+   соответствующий `ansible_port` в inventory.
+6. **Публичный доступ к PostgreSQL**: в `host_vars/pg01.yml` задайте
+   `postgres_replication_address` — публичный адрес primary, который
+   используют приложения и `pg02`; в `host_vars/pg02.yml` — публичный адрес
+   `pg02` для `pg03` и `postgres_replication_source_cidr` — публичный/NAT
+   source, который видит `pg01`; в `group_vars/postgres_cascading.yml` —
+   source `pg03`, который видит `pg02`. `postgres_app_client_rules` в
+   `group_vars/postgres.yml` вычисляется из публичных `ansible_host` хостов
+   `docker-prod-01` и `docker-prod-02`; внешний Node.js/pgAdmin-сервер
+   `95.163.209.96` добавлен туда литеральным `/32`, потому что он не
+   управляется этим репозиторием. Если приложение выходит в интернет через
+   отдельный NAT-адрес, замените соответствующее значение `from` на этот
+   публичный `/32`. `postgres_listen_addresses` уже
+   равен `0.0.0.0` для всех БД-хостов. Публичные адреса автоматически попадают в
+   SAN сертификатов; для дополнительного DNS-имени используйте
+   `postgres_tls_extra_sans`. Существующая реплика может переключиться с
+   прежнего адреса на публичный без пересборки: роль допускает старый
+   `ansible_host` в `primary_conninfo` и переписывает его на
+   `postgres_replication_address`.
 7. **Секреты** в зашифрованном `vault.yml` (см. ниже). Скопируйте
    `vault.yml.example`, заполните и зашифруйте. Роли проверяют, что ключевые
    пароли и SSH-ключи не остались заглушками `ChangeMe`/`ReplaceMe`.
-   Для WAL-G дополнительно задайте `vault_walg_s3_access_key_id`,
-   `vault_walg_s3_secret_access_key` и `vault_walg_libsodium_key`. Роль
-   хранит две копии бэкапов в двух S3; задайте реальный
-   `postgres_walg_secondary_s3_prefix` (по умолчанию там заглушка
-   `CHANGE-ME`). Если второй S3 в другом аккаунте, добавьте
-   `vault_walg_secondary_s3_access_key_id` и
-   `vault_walg_secondary_s3_secret_access_key`, иначе используются ключи
-   primary S3.
+   Для WAL-G задайте credentials VK Cloud (`vault_walg_s3_*`), credentials
+   Yandex Cloud (`vault_walg_secondary_s3_*`) и общий
+   `vault_walg_libsodium_key`. Роль хранит две копии бэкапов в bucket
+   `s3://tlcamp-db-backup/...` в VK Cloud и Yandex Cloud; оба таргета
+   обязательны. Для GitLab S3 задайте
+   `vault_gitlab_backup_s3_access_key_id` и
+   `vault_gitlab_backup_s3_secret_access_key`.
 8. **Параметры Proxmox** в `provisioning/proxmox/vars.yml`:
    `proxmox_api_host`, `proxmox_node`, `proxmox_template`, `proxmox_storage`,
    `proxmox_bridge`, если используете provisioning.
 9. **Размеры ВМ** в `provisioning/proxmox/vars.yml`, если используете
-   provisioning. Размер `pg03` задаётся отдельно во втором облаке.
-10. **TLS-сертификаты**: по умолчанию создаётся self-signed сертификат.
-   Для production лучше подготовить `nginx_tls_mode: custom` и свои файлы.
+   provisioning. Размеры `pg03` и `docker-prod-02` задаются отдельно во
+   втором облаке.
+10. **TLS-сертификаты**: GitLab и Kibana получают сертификаты Let's Encrypt
+    автоматически. Для отдельного `nginx01` по умолчанию создаётся
+    self-signed сертификат; для production подготовьте
+    `nginx_tls_mode: custom` и свои файлы.
+11. **CA для приложений**: скопируйте `files/postgres-tls/ca.crt` на
+    `docker-prod-02` (и другие app-хосты) и укажите его в приложении как
+    `sslrootcert`. Без этого `sslmode=verify-full` не сможет проверить
+    сертификат PostgreSQL. Приватный ключ `ca.key` на app-хосты не копируется.
 
 > В `vmlist` перечислены роли ВМ, но нет ни сети, ни домена, ни размеров, ни
 > гипервизора. Всё перечисленное выше — документированные допущения, а не
@@ -170,10 +212,13 @@ Valkey и Elastic Stack устанавливаются и настраивают
 - SSH-ключ пользователя `ubuntu` уже добавлен в `authorized_keys`;
 - исходящий доступ к репозиториям Ubuntu, Docker, GitLab, Elastic и PGDG;
 - синхронизированное время (роль `common` настраивает chrony);
-- для `pg03`: сетевой доступ к `pg02` на TCP `5432` и к репозиториям PGDG.
-  Предпочтительны VPN или private peering; при репликации через публичную
-  сеть ограничьте `:5432` на `pg02` только адресом `pg03` в UFW и
-  `pg_hba.conf`.
+- для `pg03`: публичный доступ к `pg02` на TCP `5432` и к репозиториям PGDG.
+  Для приложений: публичный доступ к `pg01` на TCP `5432`; для `pg02`:
+  публичный доступ к `pg01` на TCP `5432`. Все PostgreSQL-серверы принимают
+  `:5432` только с публичных адресов `docker-prod-01`, `docker-prod-02`,
+  внешнего app/pgAdmin-сервера `95.163.209.96` и непосредственных реплик.
+  Внутренние сети не используются. Весь трафик PostgreSQL, включая клиентский,
+  шифруется TLS с проверкой сертификата (`sslmode=verify-full`).
 
 Роль `common` создаёт администратора `deploy`, устанавливает ему ключи из
 vault и настраивает `sudo`. После первого bootstrap можно переключить
@@ -237,15 +282,19 @@ export ANSIBLE_VAULT_PASSWORD_FILE="$PWD/.vault_pass"
 
 ```bash
 $EDITOR inventories/production/hosts.yml
-$EDITOR inventories/production/group_vars/all/main.yml
-$EDITOR inventories/production/group_vars/postgres_cascading.yml   # pg03
-$EDITOR inventories/production/host_vars/pg02.yml                  # межоблачный адрес
-$EDITOR provisioning/proxmox/vars.yml   # если используете Proxmox
+$EDITOR inventories/production/group_vars/all/main.yml             # SSH/fail2ban
+$EDITOR inventories/production/group_vars/postgres.yml             # public app CIDRs
+$EDITOR inventories/production/group_vars/postgres_cascading.yml   # pg03 public source
+$EDITOR inventories/production/host_vars/pg01.yml                  # public primary endpoint
+$EDITOR inventories/production/host_vars/pg02.yml                  # public pg02 endpoint
+$EDITOR inventories/production/host_vars/pg03.yml                  # public pg03 endpoint
+$EDITOR provisioning/proxmox/vars.yml   # только если используете Proxmox
 ```
 
-Проверьте, что IP ВМ из Proxmox в inventory и в provisioning совпадают, а
-домен и сеть заменены на реальные. Для `pg03` отдельно задайте адрес второго
-облака и межоблачную сеть репликации.
+Все `203.0.113.x` — placeholder-адреса; замените их на реальные публичные IP.
+Проверьте, что IP ВМ из Proxmox (если provisioning используется) совпадают с
+inventory и домен заменён на реальный. Отдельной приватной сети для
+PostgreSQL или других сервисов нет.
 
 ### 3. Проверить SSH
 
@@ -266,9 +315,10 @@ ansible-playbook playbooks/bootstrap.yml --ask-vault-pass
 ```
 
 Bootstrap ставит базовые пакеты, создаёт `deploy`, устанавливает SSH-ключи,
-включает UFW, fail2ban, chrony и unattended-upgrades. **Перед запуском
-убедитесь, что SSH-ключ из vault рабочий и что `common_firewall_ssh_sources`
-содержит сеть, из которой вы подключаетесь.** Иначе можно потерять доступ.
+включает UFW, fail2ban, chrony и unattended-upgrades. SSH открыт с любых
+адресов, поэтому **до запуска убедитесь, что SSH-ключ из vault рабочий**:
+пароли отключены, а fail2ban начнёт банить перебор. Для аварийного доступа
+держите консоль гипервизора/облака.
 
 ### 5. Полное развёртывание
 
@@ -303,11 +353,12 @@ make verify VAULT_ARGS=--ask-vault-pass
 | `make inventory` | граф inventory |
 | `make ping` | SSH-доступность всех хостов |
 | `make check` | dry-run `site.yml` (`--check --diff`) |
-| `make provision` | создание/обновление ВМ в Proxmox |
+| `make provision` | опциональное создание/обновление ВМ в Proxmox (не входит в `site`) |
 | `make bootstrap` | базовый bootstrap |
 | `make site` | полное развёртывание |
 | `make verify` | post-deploy проверки |
-| `make gitlab`, `make postgres`, `make docker`, `make elk`, `make filebeat`, `make nginx`, `make maintenance` | отдельный сервис |
+| `make verify-postgres` | только PostgreSQL: репликация, TLS и WAL-G |
+| `make gitlab`, `make postgres`, `make postgres-tls`, `make docker`, `make elk`, `make filebeat`, `make nginx`, `make maintenance` | отдельный сервис |
 | `make vault-edit` | редактирование vault |
 | `make clean` | удалить venv и локальный кэш |
 
@@ -330,11 +381,12 @@ Ansible как group vars для всех хостов. Файл зашифро�
 | `vault_gitlab_smtp_password` | пароль SMTP (если включён) |
 | `vault_postgres_replication_password` | пароль пользователя `replicator` |
 | `vault_postgres_app_password` | пример пароля прикладного пользователя |
-| `vault_walg_s3_access_key_id` | access key для primary WAL-G S3 (PostgreSQL backups) |
-| `vault_walg_s3_secret_access_key` | secret key для primary WAL-G S3 |
+| `vault_postgres_admin_password` | пароль административной роли `dbadmin` для pgAdmin |
+| `vault_walg_s3_access_key_id` | access key для WAL-G в VK Cloud (primary) |
+| `vault_walg_s3_secret_access_key` | secret key для WAL-G в VK Cloud |
 | `vault_walg_libsodium_key` | 64 hex-символа для шифрования WAL-G (общий ключ обеих копий) |
-| `vault_walg_secondary_s3_access_key_id` | опционально: access key для второго WAL-G S3; если не задан, используется primary |
-| `vault_walg_secondary_s3_secret_access_key` | опционально: secret key для второго WAL-G S3; если не задан, используется primary |
+| `vault_walg_secondary_s3_access_key_id` | access key для WAL-G в Yandex Cloud (secondary) |
+| `vault_walg_secondary_s3_secret_access_key` | secret key для WAL-G в Yandex Cloud |
 | `vault_valkey_password` | `requirepass` для Valkey |
 | `vault_elastic_password` | пароль суперпользователя `elastic` |
 | `vault_kibana_system_password` | пароль `kibana_system` |
@@ -411,8 +463,15 @@ group vars одного сервиса не перекрывали другой.
 
 `pg03` входит в `postgres_replicas` (общие настройки реплики) и в
 `postgres_cascading`. Отдельная группа позволяет запускать каскадные реплики
-только после `pg02`. `host_vars/pg02.yml` содержит адрес для `pg03` и
-правило UFW, а `group_vars/postgres_cascading.yml` — исходный CIDR `pg03`.
+только после `pg02`. `host_vars/pg02.yml` содержит публичный адрес `pg02` и
+правило UFW для `pg03`, а `group_vars/postgres_cascading.yml` — публичный
+source CIDR `pg03`.
+
+`docker-prod-02` находится во втором облаке; его публичный адрес используется
+и для Ansible, и для source-правил PostgreSQL. Если у хоста отдельный
+NAT-egress, переопределите `from` в `postgres_app_client_rules`. Все
+Docker-хосты и внешний app-сервер подключаются к PostgreSQL через
+публичный/NAT-адрес; для PostgreSQL приватная сеть не используется.
 
 `log_shippers` — группа-агрегатор: она включает все хосты, кроме `elk01`.
 Filebeat ставится на 9 машин; `elk01` хранит логи локально.
@@ -422,9 +481,17 @@ Filebeat ставится на 9 машин; `elk01` хранит логи ло�
 | Переменная | Где задаётся | Назначение |
 |---|---|---|
 | `postgres_replication_topology` | `group_vars/postgres.yml` | карта `реплика: upstream`; сейчас `pg02: pg01`, `pg03: pg02` |
-| `postgres_replication_address` | `host_vars/pg02.yml` | адрес `pg02`, по которому подключается `pg03` (публичный/NAT/VPN) |
-| `postgres_replication_source_cidr` | `group_vars/postgres_cascading.yml` | исходный CIDR `pg03`, который видит `pg02`; используется в `pg_hba` и UFW |
-| `postgres_listen_addresses` | `host_vars/pg02.yml` | `0.0.0.0` на `pg02`, чтобы NAT/публичный адрес был доступен; доступ ограничен UFW и `pg_hba` |
+| `postgres_app_client_rules` | `group_vars/postgres.yml` | публичные source CIDR приложений (Docker prod-хосты и внешний `95.163.209.96`); UFW на всех PG-серверах |
+| `postgres_client_networks` | `group_vars/postgres.yml` | вычисляется из `postgres_app_client_rules`; `hostssl`-правила приложений на всех PG-серверах |
+| `postgres_replication_address` | `host_vars/pg01.yml`, `host_vars/pg02.yml`, `host_vars/pg03.yml` | публичный адрес, по которому приложения и реплики подключаются к хосту; входит в SAN |
+| `postgres_replication_source_cidr` | `host_vars/pg02.yml`, `group_vars/postgres_cascading.yml` | публичный source CIDR, который видит upstream; используется в `pg_hba` и UFW |
+| `postgres_listen_addresses` | `group_vars/postgres.yml` | `0.0.0.0` на всех БД-хостах; доступ ограничен UFW и `pg_hba` |
+| `postgres_tls_enabled` | `group_vars/postgres.yml` | включает TLS для сервера, приложений и репликации; по умолчанию `true` |
+| `postgres_replication_sslmode` | `group_vars/postgres.yml` | режим проверки сертификата upstream; по умолчанию `verify-full` |
+| `postgres_tls_cert_not_after` | `roles/postgres/defaults/main.yml` | срок серверного сертификата, 10 лет (`+3650d`) |
+| `postgres_tls_ca_not_after` | `roles/postgres/defaults/main.yml` | срок CA, 20 лет (`+7300d`) |
+| `postgres_tls_local_dir` | `roles/postgres/defaults/main.yml` | каталог CA и сертификатов на контроллере; по умолчанию `files/postgres-tls/` |
+| `postgres_tls_extra_sans` | host/group vars | дополнительные SAN, например `DNS:pg02.db.example.com` |
 
 `postgres_replication_topology` — единственное место, где описана форма
 каскада. Роль вычисляет по нему downstream-реплики для слотов и `pg_hba`.
@@ -442,6 +509,132 @@ Filebeat ставится на 9 машин; `elk01` хранит логи ло�
 `group_vars/<group>/`: Ansible выбирает что-то одно, и переменные из файла
 могут «потеряться». Используйте либо файл, либо каталог.
 
+### Внешние клиенты PostgreSQL
+
+Хост, который не управляется репозиторием (например, Node.js-приложение и
+pgAdmin на `95.163.209.96`), не добавляется в `hosts.yml`: иначе Ansible
+начнёт пытаться подключиться к нему и включит его в `log_shippers`. Вместо
+этого добавьте его публичный source-адрес в `postgres_app_client_rules`
+(`group_vars/postgres.yml`). Сейчас там уже есть правило `95.163.209.96/32`;
+оно попадает и в UFW, и в `pg_hba.conf` на `pg01`, `pg02` и `pg03`.
+
+Применить изменения:
+
+```bash
+.venv/bin/ansible-playbook playbooks/site.yml \
+  --limit pg01,pg02,pg03 --tags common,postgres \
+  --vault-password-file .vault_pass
+```
+
+Вместо `--vault-password-file .vault_pass` можно один раз выполнить
+`export ANSIBLE_VAULT_PASSWORD_FILE="$PWD/.vault_pass"` или указать
+`--ask-vault-pass`, если пароль нужно ввести вручную.
+
+Команда обновит UFW (роль `common`) и `pg_hba.conf` (роль `postgres`), не
+запуская остальные сервисы. Если нужно обновить только firewall или только
+`pg_hba`, запустите `playbooks/bootstrap.yml` или `playbooks/postgres.yml` с
+тем же `--limit`.
+
+На внешний хост копируется только публичный CA, без `ca.key`:
+
+```bash
+scp files/postgres-tls/ca.crt \
+  root@95.163.209.96:/etc/ssl/certs/postgres-ca.crt
+```
+
+Если приложение и pgAdmin запущены в Docker на этом же хосте, отдельное
+правило для контейнеров не нужно: исходящие подключения из стандартной
+bridge-сети Docker проходят через SNAT, и PostgreSQL видит адрес хоста
+`95.163.209.96`. Правило придётся расширить, только если контейнеры
+используют macvlan/ipvlan со своими публичными IP или выходят через
+отдельный VPN/NAT. Внутренние адреса Docker (`172.17.0.0/16` и т.п.) в
+`pg_hba.conf` добавлять не нужно.
+
+CA нужно смонтировать внутрь контейнеров, например:
+
+```yaml
+services:
+  app:
+    volumes:
+      - /etc/ssl/certs/postgres-ca.crt:/etc/ssl/certs/postgres-ca.crt:ro
+  pgadmin:
+    volumes:
+      - /etc/ssl/certs/postgres-ca.crt:/etc/ssl/certs/postgres-ca.crt:ro
+```
+
+В pgAdmin root certificate указывается как путь **внутри контейнера** —
+`/etc/ssl/certs/postgres-ca.crt`. Браузер, с которого открыт pgAdmin, к
+PostgreSQL не подключается: соединение устанавливает контейнер pgAdmin.
+
+#### Права на создание БД и ролей
+
+В конфигурации есть отдельная административная роль `dbadmin` с правами
+`LOGIN,CREATEDB,CREATEROLE`. Она также является членом `testuser`, поэтому
+может создавать объекты и выдавать права в существующей БД `testdb`.
+Пароль роли хранится в vault (`vault_postgres_admin_password`).
+
+`dbadmin` может:
+
+- создавать базы данных (`CREATE DATABASE`);
+- создавать пользователей и роли (`CREATE ROLE`), задавать им пароли;
+- выдавать привилегии на базы, которыми владеет, и на объекты `testdb`
+  через членство в `testuser`.
+
+Ограничения:
+
+- `dbadmin` не является суперпользователем и не может создавать роли с
+  `SUPERUSER`, `REPLICATION` или `BYPASSRLS`;
+- в PostgreSQL 16+ `CREATEROLE` позволяет управлять только ролями, на
+  которые у роли есть `ADMIN OPTION`; на созданные ей роли это право
+  выдаётся автоматически;
+- полные права на любые объекты кластера остаются только у локального
+  `postgres` (`sudo -u postgres psql` на БД-хосте).
+
+`testuser` по-прежнему имеет только `LOGIN` и остаётся владельцем `testdb`;
+использовать его для администрирования из pgAdmin не нужно.
+
+Параметры подключения к primary (`pg01`):
+
+- host — `postgres_replication_address` из `host_vars/pg01.yml`;
+- port — `5432`;
+- для приложения — БД и роль из `postgres_databases` / `postgres_users`
+  (`testdb` / `testuser`); для pgAdmin — `dbadmin` (может подключаться к
+  `testdb` и создавать новые БД);
+- `sslmode=verify-full`, `sslrootcert=/etc/ssl/certs/postgres-ca.crt`.
+
+Запись возможна только на `pg01`; `pg02` и `pg03` — read-only реплики, но
+принимают те же прикладные подключения.
+
+Пример для `psql`:
+
+```bash
+psql "host=<pg01-public-ip> port=5432 dbname=testdb user=testuser \
+  sslmode=verify-full sslrootcert=/etc/ssl/certs/postgres-ca.crt"
+```
+
+Эквивалент для Node.js (`pg`):
+
+```js
+const fs = require('fs');
+const { Client } = require('pg');
+
+const client = new Client({
+  host: '<pg01-public-ip>',
+  port: 5432,
+  database: 'testdb',
+  user: 'testuser',
+  password: process.env.PGPASSWORD,
+  ssl: {
+    ca: fs.readFileSync('/etc/ssl/certs/postgres-ca.crt'),
+    rejectUnauthorized: true,
+  },
+});
+```
+
+В pgAdmin укажите тот же host и порт, пользователя `dbadmin`, SSL mode —
+`verify-full`, root certificate — `/etc/ssl/certs/postgres-ca.crt`. Пароль
+`dbadmin` хранится в vault (`vault_postgres_admin_password`).
+
 ### Основные переменные
 
 `inventories/production/group_vars/all/main.yml`:
@@ -449,12 +642,12 @@ Filebeat ставится на 9 машин; `elk01` хранит логи ло�
 | Переменная | Значение по умолчанию | Комментарий |
 |---|---|---|
 | `internal_domain` | `campbox.tech` | заменить |
-| `internal_network` | `10.10.10.0/24` | заменить |
-| `gitlab_hostname` | `gitlab.<domain>` | внешнее имя GitLab |
-| `kibana_hostname` | `kibana.<domain>` | внешнее имя Kibana |
+| `gitlab_hostname` | `gitlab-test.<domain>` | внешнее имя GitLab |
+| `kibana_hostname` | `elastik.<domain>` | внешнее имя Kibana |
 | `ansible_user` | `ubuntu` | начальный SSH-пользователь |
 | `common_timezone` | `Europe/Moscow` | |
-| `common_firewall_ssh_sources` | `internal_network` | **проверить до bootstrap** |
+| `common_firewall_ssh_sources` | `0.0.0.0/0`, `::/0` | SSH со всех адресов |
+| `common_fail2ban_ignoreips` | `[]` | нет admin/CI whitelist; loopback игнорируется |
 | `common_admin_user` | `deploy` | создаётся ролью `common` |
 | `common_admin_sudo_nopasswd` | `true` | при необходимости ужесточить |
 | `local_backup_keep_days` | `7` | локальное хранение GitLab backup-ов |
@@ -462,7 +655,10 @@ Filebeat ставится на 9 машин; `elk01` хранит логи ло�
 ## Provisioning в Proxmox VE
 
 Playbook `playbooks/proxmox-provision.yml` создаёт ВМ из cloud-init-шаблона.
-Он не обязателен: если ВМ уже существуют, переходите сразу к `site.yml`.
+Он **не запускается по умолчанию** и не входит в `site.yml`; используйте
+`make provision` только если действительно создаёте ВМ в Proxmox. Если ВМ уже
+существуют, переходите сразу к `site.yml`. Адреса в примере ниже — публичные
+placeholder-адреса.
 
 ### Настройка
 
@@ -478,18 +674,19 @@ proxmox_node: "pve01"
 proxmox_template: "ubuntu-2404-cloudinit-template"
 proxmox_storage: "local-lvm"
 proxmox_bridge: "vmbr0"
-proxmox_gateway: "10.10.10.1"
+proxmox_gateway: "203.0.113.1"
 proxmox_nameservers:
-  - "10.10.10.1"
+  - "203.0.113.1"
   - "1.1.1.1"
 ```
 
 Далее — список `proxmox_vms` с `name`, `vmid`, `cores`, `memory`, `disk`,
 `ip`. IP перечисленных ВМ должны совпадать с inventory.
 
-`pg03` намеренно отсутствует в `proxmox_vms`: она находится во втором
-облаке и создаётся средствами этого облака. Добавьте её в inventory и
-подготовьте SSH-доступ, но не пытайтесь создать её этим playbook-ом.
+`pg03` и `docker-prod-02` намеренно отсутствуют в `proxmox_vms`: они
+находятся во втором облаке и создаются средствами этого облака. Добавьте их
+в inventory и подготовьте SSH-доступ, но не пытайтесь создать их этим
+playbook-ом.
 
 Требования к шаблону:
 
@@ -557,6 +754,9 @@ ansible all -m ansible.builtin.command -a "cloud-init status --wait"
 # Только PostgreSQL и Valkey
 ansible-playbook playbooks/site.yml --tags postgres,valkey --ask-vault-pass
 
+# Только проверка и перевыпуск TLS-сертификатов PostgreSQL
+ansible-playbook playbooks/postgres.yml --tags postgres_tls --ask-vault-pass
+
 # Всё, кроме Docker
 ansible-playbook playbooks/site.yml --skip-tags docker --ask-vault-pass
 
@@ -567,10 +767,10 @@ ansible-playbook playbooks/site.yml --tags gitlab --limit gitlab01 --ask-vault-p
 ansible-playbook playbooks/site.yml --check --diff --ask-vault-pass
 ```
 
-Основные теги: `common`, `bootstrap`, `postgres`, `postgres_primary`,
-`postgres_replica`, `postgres_cascading`, `valkey`, `gitlab`, `docker`,
-`docker_prod`, `docker_test`, `elk`, `logging`, `filebeat`, `nginx`,
-`maintenance`, `rclone`, `provision`, `proxmox`.
+Основные теги: `common`, `bootstrap`, `postgres`, `postgres_tls`,
+`postgres_primary`, `postgres_replica`, `postgres_cascading`, `valkey`,
+`gitlab`, `docker`, `docker_prod`, `docker_test`, `elk`, `logging`,
+`filebeat`, `nginx`, `maintenance`, `rclone`, `provision`, `proxmox`.
 
 `site.yml` запускает bootstrap первым, поэтому на свежих ВМ достаточно одной
 команды. Если нужен только bootstrap, запускайте `bootstrap.yml` отдельно.
@@ -584,9 +784,9 @@ ansible-playbook playbooks/site.yml --check --diff --ask-vault-pass
 - пользователь `deploy`, группа `sudo`, SSH-ключи из vault;
 - SSH hardening: только ключи, `PermitRootLogin prohibit-password`,
   ограничение попыток, drop-in `00-ansible-hardening.conf`;
-- UFW: входящие по умолчанию запрещены, SSH — из
-  `common_firewall_ssh_sources`, сервисные порты — из group vars;
-- fail2ban для SSH;
+- UFW: входящие по умолчанию запрещены, SSH — с любых IPv4/IPv6-адресов
+  (`0.0.0.0/0`, `::/0`), сервисные порты — только из group vars;
+- fail2ban для SSH без whitelist (кроме loopback);
 - chrony + отключение `systemd-timesyncd`;
 - journald, лимиты `nofile`, sysctl;
 - `/etc/hosts` со всеми хостами кластера;
@@ -600,8 +800,9 @@ ansible-playbook playbooks/site.yml --check --diff --ask-vault-pass
 - настройки в `conf.d/99-ansible.conf`: `listen_addresses`, память,
   `wal_level`, `max_wal_senders`, `max_replication_slots`, `hot_standby`,
   WAL, слоты, логирование;
-- `pg_hba.conf`: peer для локальных, SCRAM для внутренней сети и
-  `replication` только для непосредственных downstream-реплик;
+- `pg_hba.conf`: peer для локальных; для приложений и реплик — только
+  публичные `hostssl`-правила со SCRAM; незашифрованные TCP-подключения
+  приложений и репликации отклоняются;
 - пользователь `replicator` с правом `REPLICATION` создаётся на primary и
   попадает на реплики вместе с базовой копией;
 - топология задаётся картой `postgres_replication_topology`:
@@ -609,13 +810,21 @@ ansible-playbook playbooks/site.yml --check --diff --ask-vault-pass
 - physical slots создаются на непосредственном upstream:
   `replica_pg02` на `pg01`, `replica_pg03` на `pg02`;
 - `pg02` — одновременно standby и upstream для `pg03`. Поэтому на нём
-  включены `max_wal_senders`, `max_replication_slots` и `hot_standby`, а
-  `pg_hba.conf` и UFW разрешают `:5432` только из внутренней сети и от
-  `pg03`;
-- `pg03` подключается не к `pg01`, а к адресу `postgres_replication_address`
-  из `host_vars/pg02.yml`. Для межоблачной сети это публичный IP, NAT или
-  VPN-адрес; источник `pg03` задаётся в
-  `group_vars/postgres_cascading.yml` (`postgres_replication_source_cidr`);
+  включены `max_wal_senders`, `max_replication_slots` и `hot_standby`;
+  `pg_hba.conf` и UFW разрешают `:5432` с публичных адресов приложений и
+  `pg03`, но не с других адресов;
+- приложения подключаются к публичному `postgres_replication_address` из
+  `host_vars/pg01.yml`; `pg02` подключается к публичному адресу `pg01`, а
+  `pg03` — к публичному адресу `pg02`. `pg02` и `pg03` также принимают
+  приложения с трёх app-хостов, но не являются точкой входа по умолчанию.
+  Все адреса публичные, отдельной приватной сети нет;
+- весь трафик PostgreSQL защищён TLS: на контроллере создаётся приватный CA
+  (`files/postgres-tls/`), для каждого PostgreSQL-хоста выпускается
+  серверный сертификат. SAN включает inventory hostname, `ansible_host`,
+  `postgres_replication_address` и адрес интерфейса. Приложения и реплики
+  подключаются с `sslmode=verify-full` и проверяют сервер по CA. Приватный
+  ключ CA остаётся на контроллере, на БД-хосты копируются только
+  CA-сертификат и собственный ключ хоста;
 - `max_slot_wal_keep_size = 10GB`: если downstream-реплика долго недоступна,
   слот инвалидируется вместо бесконечного накопления WAL на upstream
   (реплику после этого нужно пересобрать);
@@ -768,9 +977,10 @@ Valkey 7.2 устанавливается из репозитория Ubuntu 24.
 
 - пакеты `valkey-server`, `valkey-tools`;
 - пароль `requirepass` из vault;
-- bind на `127.0.0.1` и приватный IP;
+- bind на `127.0.0.1` и публичный IP;
 - AOF `everysec`, RDB snapshots;
-- UFW: порт `6379` только из внутренней сети;
+- UFW: порт `6379` только с публичных адресов `docker-prod-01` и
+  `docker-test-01`; `docker-prod-02` во втором облаке не допускается без TLS;
 - проверка `PING` с паролем.
 
 `valkey_maxmemory` по умолчанию пуст (без лимита). Для кэша задайте,
@@ -782,13 +992,14 @@ Valkey 7.2 устанавливается из репозитория Ubuntu 24.
 ### GitLab CE
 
 - установка из официального репозитория GitLab;
-- `external_url` = `https://gitlab.<domain>`;
-- GitLab за nginx: встроенный nginx слушает `:80`, TLS завершается на
-  `nginx01`;
-- `trusted_proxies` — адрес `nginx01`;
+- `external_url` = `https://gitlab-test.<domain>`;
+- GitLab опубликован напрямую, без внешнего nginx: встроенный nginx слушает
+  `:80`/`:443`, TLS-сертификат выпускается через Let's Encrypt;
 - начальный пароль root из vault;
 - ежедневный backup в `/var/opt/gitlab/backups` с копированием
   `gitlab.rb` и `gitlab-secrets.json`;
+- backup автоматически выгружается в S3 VK Cloud (`tlcamp-gitlab-backup`)
+  через rclone;
 - SMTP по умолчанию выключен; включается переменными `gitlab_smtp_*`.
 
 После первого запуска:
@@ -824,8 +1035,9 @@ nginx. Если разработчики подключаются из друг�
 > **Важно про Docker и UFW.** Docker управляет правилами iptables
 > самостоятельно, поэтому порты, опубликованные контейнером через `-p`/
 > `ports:`, могут обходить UFW. Не публикуйте порты на `0.0.0.0` без
-> необходимости: привязывайте их к `127.0.0.1` или внутреннему адресу,
-> используйте reverse proxy и отдельно проверяйте `iptables -L DOCKER-USER`.
+> необходимости: привязывайте их к `127.0.0.1` или конкретному публичному
+> адресу, используйте reverse proxy и отдельно проверяйте
+> `iptables -L DOCKER-USER`.
 > Для строгой фильтрации добавьте `ufw-docker` или настройте `DOCKER-USER`
 > вручную.
 
@@ -834,9 +1046,11 @@ nginx. Если разработчики подключаются из друг�
 - Elasticsearch, Kibana, Logstash из репозитория Elastic 9.x;
 - single-node Elasticsearch, security enabled, HTTP TLS выключен, потому что
   Elasticsearch слушает только `127.0.0.1`;
-- heap 50% RAM (не более 31 ГБ);
-- Kibana слушает приватный IP, доступна через nginx;
-- Logstash beats input `0.0.0.0:5044`, firewall — из внутренней сети;
+- Kibana опубликована напрямую на `:443` (`https://elastik.<domain>`),
+  TLS-сертификат выпускается через certbot/Let's Encrypt;
+- heap Elasticsearch и Logstash ограничен под 4 ГБ RAM тестовой ВМ;
+- Logstash beats input `0.0.0.0:5044`, firewall разрешает только публичные
+  адреса хостов группы `log_shippers`;
 - роли/пользователи `kibana_system`, `logstash_internal`, `logstash_writer`;
 - Filebeat на остальных хостах отправляет логи в Logstash.
 
@@ -855,25 +1069,34 @@ curl -u elastic 'http://127.0.0.1:9200/_cat/indices?v'
 
 ### nginx
 
-- TLS-терминация для `gitlab.<domain>` и `kibana.<domain>`;
-- HTTP → HTTPS redirect;
-- proxy для GitLab (включая WebSocket/Upgrade) и Kibana;
-- self-signed сертификат по умолчанию (SAN: GitLab, Kibana, домен);
-- поддержка custom-сертификата;
-- `client_max_body_size 0` для загрузки артефактов GitLab.
+Роль `nginx` остаётся в репозитории для отдельного хоста `nginx01`, но
+**не используется** для публикации GitLab и Kibana: они подключены к
+интернету напрямую.
 
-Порты `80` и `443` открыты в UFW. Upstream-порты GitLab (`80`) и Kibana
-(`5601`) доступны только с `nginx01`.
+- TLS-терминация и reverse proxy для задач, которые явно размещены на
+  `nginx01`;
+- HTTP → HTTPS redirect;
+- self-signed сертификат по умолчанию;
+- поддержка custom-сертификата;
+- `client_max_body_size 0` для загрузки больших файлов.
 
 ## TLS и DNS
 
-По умолчанию `nginx_tls_mode: "selfsigned"`:
+Публичные сервисы используют DNS-имена, которые указывают на сами ВМ:
 
-- создаётся RSA-ключ 4096 бит;
-- сертификат самоподписанный, срок 825 дней;
-- браузеры покажут предупреждение.
+| Имя | IP | TLS |
+|---|---|---|
+| `gitlab-test.campbox.tech` | `gitlab01` | встроенный nginx GitLab + Let's Encrypt |
+| `elastik.campbox.tech` | `elk01` | Kibana `:443` + certbot/Let's Encrypt |
 
-Для production:
+GitLab выпускает сертификат при `gitlab-ctl reconfigure`
+(`gitlab_letsencrypt_enable: true`). Kibana получает сертификат через
+`certbot certonly --standalone`; таймер `certbot.timer` продлевает его, а
+deploy-hook копирует файлы в `/etc/kibana/certs` и перезапускает Kibana.
+Порты `80` и `443` должны быть открыты в UFW и в firewall облака.
+
+Для отдельного `nginx01` по-прежнему доступен `nginx_tls_mode: "selfsigned"`
+или `custom`:
 
 ```yaml
 # inventories/production/group_vars/nginx.yml
@@ -890,26 +1113,107 @@ nginx_tls_key_src: "/path/on/controller/privkey.pem"
 ansible-playbook playbooks/nginx.yml --ask-vault-pass
 ```
 
+### TLS PostgreSQL
+
+TLS для PostgreSQL включается вместе с ролью `postgres`. На контроллере
+создаётся приватный CA и сертификаты в `files/postgres-tls/`:
+
+- `ca.key`, `ca.csr`, `ca.crt` — корневой CA (20 лет);
+- `<host>.key`, `<host>.csr`, `<host>.crt` — серверный сертификат каждого
+  хоста (10 лет).
+
+На хостах файлы лежат в `/etc/postgresql/18/main/tls/`; `postgresql.conf`
+включает `ssl = on`, а `pg_hba.conf` использует `hostssl` и для приложений,
+и для репликации. `pg_basebackup` и WAL receiver подключаются с
+`sslmode=verify-full`, поэтому сертификат каждого хоста должен содержать его
+публичный адрес из `postgres_replication_address`. Он добавляется в SAN
+автоматически. Приложение должно использовать `sslmode=verify-full` и
+`sslrootcert=/path/to/ca.crt`; CA-сертификат — публичный, его можно копировать
+на app-хосты и монтировать в контейнеры. Приватный ключ CA не копируется.
+
+Пример подключения приложения:
+
+```bash
+psql "host=203.0.113.12 port=5432 dbname=app user=app \
+  sslmode=verify-full sslrootcert=/etc/ssl/certs/postgres-ca.crt"
+```
+
+Проверка на upstream:
+
+```bash
+sudo -u postgres psql -c "SHOW ssl;"
+sudo -u postgres psql -c "
+SELECT r.application_name, r.client_addr, s.ssl, s.version, s.cipher
+FROM pg_stat_replication r
+JOIN pg_stat_ssl s ON s.pid = r.pid;"
+```
+
+Проверка сертификата:
+
+```bash
+sudo -u postgres openssl x509 \
+  -in /etc/postgresql/18/main/tls/server.crt \
+  -noout -subject -issuer -dates -ext subjectAltName
+```
+
+`files/postgres-tls/ca.key` — критичный секрет. Сохраните его в защищённом
+месте: без него нельзя выпустить новые сертификаты, которым доверяют уже
+развёрнутые хосты. Серверные сертификаты действуют 10 лет, CA — 20 лет. Роль
+проверяет срок при каждом запуске и перевыпускает сертификат за 30 дней до
+истечения. Дополнительно role хранит локальные policy-маркеры: после изменения
+срока действия или key size сертификаты перевыпускаются сразу, не дожидаясь
+старого срока.
+
+**Автоперевыпуск не является фоновым демоном.** Проверка выполняется только
+при запуске роли. Запускайте её по расписанию (например, еженедельно) через
+cron, AWX или GitLab CI. Для обновления только TLS используйте:
+
+```bash
+make postgres-tls VAULT_ARGS=--ask-vault-pass
+# или
+ansible-playbook playbooks/postgres.yml --tags postgres_tls --ask-vault-pass
+```
+
+`make postgres-tls` рассчитан на уже настроенные хосты: он обновляет
+сертификаты и перезапускает PostgreSQL, но не выполняет первоначальную
+настройку `ssl_cert_file`/`ssl_key_file`. При первом включении TLS запускайте
+полный `make postgres`.
+
+Пример cron-задания с неинтерактивным vault-паролем:
+
+```cron
+0 4 * * 1 cd /opt/ansible && \
+  ANSIBLE_VAULT_PASSWORD_FILE=/etc/ansible/.vault_pass \
+  make postgres-tls >> /var/log/ansible-postgres-tls.log 2>&1
+```
+
+При первом включении TLS, после смены CA или изменения публичных адресов
+запускайте роль на всех PostgreSQL-хостах (`--limit pg01,pg02,pg03`), иначе у
+них будут разные доверенные CA или устаревшие SAN. После смены CA обновите
+`ca.crt` на app-хостах, иначе `verify-full` перестанет работать. При
+обновлении работающего кластера репликация кратковременно прерывается между
+перезапуском upstream и обновлением `primary_conninfo` на реплике; playbook
+восстанавливает поток в том же запуске.
+
 DNS:
 
-- `gitlab.<domain>` → IP `nginx01`;
-- `kibana.<domain>` → IP `nginx01`;
-- для GitLab SSH — `gitlab.<domain>` → IP `gitlab01` (или отдельное имя),
-  если нужен clone по SSH.
+- `gitlab-test.<domain>` → публичный IP `gitlab01`;
+- `elastik.<domain>` → публичный IP `elk01`;
+- GitLab SSH для `git clone` работает на `gitlab01:22`.
 
 Для теста без DNS добавьте записи в `/etc/hosts` на рабочей машине.
 
-Let's Encrypt автоматически не настраивается: в nginx есть ACME webroot, но
-certbot не устанавливается. Используйте custom-сертификат, внутренний CA или
-добавьте certbot отдельной ролью.
+Let's Encrypt настраивается для GitLab и Kibana. Сертификаты продлеваются
+автоматически (`gitlab-ctl` и `certbot.timer`); после смены DNS или IP
+перезапустите соответствующую роль.
 
 ## Резервное копирование
 
 | Что | Где | Когда | Хранение |
 |---|---|---|---|
-| PostgreSQL WAL-G (full) | два S3: `s3://db-backup/...` и `s3://<second-bucket>/...` | воскресенье 02:00 | 4 full + diffs в каждом S3 |
-| PostgreSQL WAL-G (diff) | те же два S3 | ежедневно 03:00 | в цепочке full |
-| GitLab backup | `gitlab01:/var/opt/gitlab/backups` | ежедневно 02:30 | 7 дней |
+| PostgreSQL WAL-G (full) | VK Cloud + Yandex Cloud: `s3://tlcamp-db-backup/db/pg18/main-encrypted-v1` | воскресенье 02:00 | 4 full + diffs в каждом S3 |
+| PostgreSQL WAL-G (diff) | те же два облака | ежедневно 03:00 | в цепочке full |
+| GitLab backup | локально `gitlab01:/var/opt/gitlab/backups` + S3 `s3://tlcamp-gitlab-backup/gitlab01/` | ежедневно 02:30 | 7 дней локально, 30 дней в S3 |
 | rclone jobs | `maint01` | по расписанию job-а | зависит от S3 |
 
 Таймеры:
@@ -974,10 +1278,37 @@ sudo -u postgres psql -c "SELECT * FROM pg_stat_archiver;"
 
 ### GitLab
 
-`gitlab-backup create` создаёт архив, рядом сохраняются `gitlab.rb` и
-`gitlab-secrets.json`. Для восстановления нужны совместимая версия GitLab и
-секреты. Официальная процедура: остановить сервисы, восстановить архив,
-вернуть `gitlab-secrets.json`, выполнить `gitlab-ctl reconfigure`.
+`gitlab-backup create` создаёт архив, рядом сохраняются `gitlab.rb`,
+`gitlab-secrets.json`, версия GitLab и `SHA256SUMS`. Скрипт
+`/usr/local/sbin/gitlab-backup.sh` затем выгружает все файлы через rclone в
+VK Cloud Object Storage:
+
+```text
+s3://tlcamp-gitlab-backup/gitlab01/<UTC-метка>/
+```
+
+Параметры:
+
+- endpoint `https://hb.ru-msk.vkcloud-storage.ru`, region `ru-msk`;
+- bucket `tlcamp-gitlab-backup`, path-style access;
+- ключи доступа — `vault_gitlab_backup_s3_access_key_id` и
+  `vault_gitlab_backup_s3_secret_access_key`;
+- локальное хранение — 7 дней, в S3 — 30 дней
+  (`gitlab_backup_s3_keep_days`).
+
+Проверка и ручной запуск:
+
+```bash
+sudo systemctl start gitlab-backup.service
+journalctl -u gitlab-backup.service -n 100 --no-pager
+sudo rclone lsf gitlab-backup:tlcamp-gitlab-backup/gitlab01 \
+  --config /etc/rclone/rclone.conf --recursive
+```
+
+Для восстановления нужны совместимая версия GitLab, архив и
+`gitlab-secrets.json`. Официальная процедура: остановить сервисы,
+восстановить архив, вернуть `gitlab-secrets.json`, выполнить
+`gitlab-ctl reconfigure`.
 
 Перенос GitLab на новую ВМ, включая backup в S3 и восстановление, описан в
 [`docs/gitlab-migration.md`](docs/gitlab-migration.md).
@@ -1053,8 +1384,12 @@ GitLab backup не включает конфигурацию, секреты, Re
 - пароли и ключи в Ansible Vault;
 - Elasticsearch security enabled, Kibana/Logstash-пользователи с паролями;
 - Valkey с `requirepass`;
-- PostgreSQL SCRAM для TCP, peer для локальных;
-- self-signed/custom TLS на внешнем периметре;
+- PostgreSQL: SCRAM для TCP, peer для локальных; приложения и репликация
+  только через публичные `hostssl`-подключения (`sslmode=verify-full`) с
+  сертификатами приватного CA; порт `5432` в UFW разрешён только конкретным
+  публичным `/32`;
+- Let's Encrypt TLS на публичных GitLab и Kibana; self-signed/custom — на
+  отдельном `nginx01`;
 - unattended-upgrades;
 - `StrictHostKeyChecking=accept-new` для первичного подключения к новым ВМ.
 
@@ -1062,12 +1397,30 @@ GitLab backup не включает конфигурацию, секреты, Re
 
 - `common_admin_sudo_nopasswd: true` — удобно, но повышает последствия
   компрометации ключа. Для строгих требований поставьте `false`.
-- PostgreSQL и Valkey общаются по внутренней сети **без TLS**. Если сеть не
-  доверенная, настройте TLS для PostgreSQL и Valkey.
-- Elasticsearch HTTP TLS выключен, потому что слушает loopback. Kibana
-  доступна по HTTP с приватного IP; снаружи — только через nginx.
-- GitLab и Kibana не должны быть доступны напрямую из интернета. UFW
-  разрешает их порты только с `nginx01`.
+- Valkey работает **без TLS** и доступен по публичному IP только с
+  `docker-prod-01` и `docker-test-01`. Хост во втором облаке не должен
+  обращаться к Valkey напрямую; если это требуется, сначала настройте TLS и
+  отдельный публичный endpoint.
+- Приватный ключ PostgreSQL CA (`files/postgres-tls/ca.key`) хранится на
+  контроллере. Без резервной копии потеря ключа потребует перевыпуска CA и
+  сертификатов на всех хостах PostgreSQL.
+- Elasticsearch HTTP TLS выключен, потому что слушает loopback
+  (`127.0.0.1:9200/9300`). Kibana опубликована напрямую на `:443`; сам
+  Elasticsearch снаружи недоступен.
+- На `gitlab01` UFW открывает только `22/tcp` (SSH и Git по SSH),
+  `80/tcp` (ACME и redirect на HTTPS) и `443/tcp`. Внутренние порты GitLab
+  (`5050`, `8060`, `9094` и экспортёры) снаружи закрыты.
+- На `elk01` UFW открывает `22/tcp`, `80/tcp` (только для продления
+  сертификата), `443/tcp` (Kibana) и `5044/tcp` **только с публичных
+  адресов хостов группы `log_shippers`**. Список строится из inventory;
+  placeholder-адреса `203.0.113.x` исключаются до заполнения реальных IP.
+  Порты `5601`, `9200`, `9300` и `9600` снаружи закрыты.
+- Проверить фактическую экспозицию можно через
+  `ansible-playbook playbooks/verify.yml --tags verify_firewall`.
+- UFW ограничивает источники, но часть межсервисного трафика остаётся
+  незашифрованной: Filebeat → Logstash идёт по plain Beats. Для строгих
+  требований включите TLS на этом участке или поднимите VPN; PostgreSQL TLS
+  этого не покрывает.
 - Резервные копии содержат секреты (GitLab secrets, дампы БД). Защищайте S3
   и локальные каталоги.
 - Пароль root GitLab из vault — начальный. Смените его и уберите/обновите
@@ -1092,7 +1445,12 @@ make inventory
 make ping VAULT_ARGS=--ask-vault-pass
 make check VAULT_ARGS=--ask-vault-pass
 make verify VAULT_ARGS=--ask-vault-pass
+make verify-postgres VAULT_ARGS=--ask-vault-pass
 ```
+
+`make verify` проверяет все хосты и требует, чтобы были установлены все
+сервисы. Если развёрнуты только PostgreSQL и отдельные Docker-хосты,
+используйте `make verify-postgres`.
 
 `make check` выполняет `--check --diff`; часть задач (apt, установка пакетов)
 в check-режиме может не выполняться или требовать уже установленных
@@ -1132,15 +1490,14 @@ valkey-cli -h 127.0.0.1 -p 6379 -a "$VALKEY_PASSWORD" --no-auth-warning ping
 # GitLab
 sudo gitlab-ctl status
 curl -fsS http://127.0.0.1/-/health
+curl -fsS https://gitlab-test.<domain>/users/sign_in >/dev/null
 
 # Elastic Stack
 curl -u elastic 'http://127.0.0.1:9200/_cluster/health?pretty'
-curl -I "http://$(hostname -I | awk '{print $1}'):5601/api/status"
+curl -fsS https://elastik.<domain>/api/status
 
-# nginx
+# nginx01 (не используется для GitLab/Kibana)
 sudo nginx -t
-curl -kI https://gitlab.<domain>/
-curl -kI https://kibana.<domain>/
 
 # Логи
 journalctl -u postgresql@18-main -n 100 --no-pager
@@ -1154,7 +1511,7 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
 |---|---|
 | `vault password` / `no vault secrets found` | создан ли `vault.yml`, зашифрован ли он, передан ли пароль |
 | `Permission denied (publickey)` | ключ `ubuntu` в `authorized_keys`, правильный `ansible_user`, SSH-порт |
-| Потеряли SSH после bootstrap | `common_firewall_ssh_sources` не содержит вашу сеть; используйте консоль Proxmox и исправьте UFW |
+| Потеряли SSH после bootstrap | проверьте `sshd_config`, UFW и не забанен ли ваш IP в fail2ban; используйте консоль гипервизора/облака |
 | `Host key verification failed` | сменился ключ ВМ; удалите старый fingerprint из `known_hosts` |
 | `community.*` collection not found | `ansible-galaxy collection install -r requirements.yml` |
 | Elasticsearch не стартует | `vm.max_map_count`, memory lock, heap, `journalctl -u elasticsearch` |
@@ -1162,7 +1519,8 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
 | GitLab долго не поднимается | `gitlab-ctl reconfigure` может идти минутами; смотрите `gitlab-ctl status` |
 | Реплика не догоняет | слот на непосредственном upstream, `pg_stat_replication`, `.pgpass`, `pg_hba`, firewall |
 | Роль отклоняет существующую реплику | upstream/slot в `postgres_replication_topology` не совпадает с `SHOW primary_conninfo` / `SHOW primary_slot_name`; пересоберите реплику или обновите конфигурацию вручную |
-| `pg03` не подключается к `pg02` | `postgres_replication_address` на `pg02`, NAT/VPN, `postgres_replication_source_cidr`, UFW и `pg_hba` на `pg02`, `wal_status` слота `replica_pg03` |
+| Приложение не подключается к `pg01` | `postgres_app_client_rules` (публичный source CIDR), UFW на `pg01`, `hostssl` в `pg_hba.conf`, `postgres_replication_address`, SAN сертификата, `ca.crt` на app-хосте и `sslmode=verify-full` |
+| `pg03` не подключается к `pg02` | публичный `postgres_replication_address` на `pg02`, `postgres_replication_source_cidr`, UFW и `pg_hba` на `pg02`, `wal_status` слота `replica_pg03` |
 | WAL не архивируется | `SELECT * FROM pg_stat_archiver;`, `journalctl -u postgresql@18-main`, доступность обоих S3, права `postgres` на `/etc/wal-g/config.json`, `/etc/wal-g/config-secondary.json` и ключ, `walg backup-list`, `walg-secondary backup-list` |
 | WAL-G backup падает | `journalctl -u wal-g-backup@full.service`, версия `wal-g --version`, S3 endpoint/region в обоих конфигах, `WALG_S3_PREFIX`, ключ libsodium |
 | Второй S3 отстаёт или не принимает копии | `journalctl -u wal-g-backup@*`, `walg-secondary backup-list`, `wal-g copy --from /etc/wal-g/config.json --to /etc/wal-g/config-secondary.json`, credentials второго S3 |
@@ -1180,17 +1538,25 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
 - **Размеры ВМ, кроме тестовой, — допущение.** `vmlist` не содержит
   требований к CPU/RAM/диску.
 - **Ubuntu 24.04 LTS** — единственная поддерживаемая ОС.
-- **Proxmox VE** — опциональный гипервизор для первого облака. `pg03`
-  находится во втором облаке и этим репозиторием не создаётся.
+- **Proxmox VE** — опциональный гипервизор; `make site` не создаёт ВМ.
+  `pg03` и `docker-prod-02` находятся во втором облаке и этим репозиторием не
+  создаются.
 - **Нет HA**: GitLab, nginx, ELK, Valkey и maintenance — одиночные хосты.
   PostgreSQL имеет primary, реплику первого уровня и каскадную реплику, но
   без автоматического failover.
 - **Межоблачная репликация асинхронная.** `pg03` зависит от доступности
   `pg02`; при потере `pg02` автоматического переключения на `pg01` нет.
   Задержка и стоимость трафика зависят от канала между облаками.
-- **TLS для PostgreSQL не настроен.** Если `pg02` и `pg03` связываются через
-  публичную сеть, используйте VPN/private peering либо добавьте SSL-сертификаты
-  и `sslmode` в `primary_conninfo`; иначе трафик репликации не шифруется.
+- **Все ВМ публичные.** `pg01`, `pg02`, `pg03` и остальные хосты доступны по
+  публичным адресам; приватной management-сети нет. Весь PostgreSQL-трафик
+  шифруется TLS, но порт `5432` всё равно должен быть ограничен конкретными
+  публичными `/32` в UFW и `pg_hba.conf`; не открывайте его для `0.0.0.0/0`.
+  SSH, наоборот, открыт с любых IPv4/IPv6-адресов; защита — только ключи и
+  fail2ban, который банит перебор со всех адресов (кроме loopback).
+- **Автоперевыпуск TLS ленивый.** Сертификаты проверяются и перевыпускаются
+  только при запуске роли; без cron/AWX/GitLab CI они не обновятся сами.
+  Пример cron и команда `make postgres-tls` приведены в разделе
+  [TLS PostgreSQL](#tls-postgresql).
 - **`pg03` — единственная реплика во втором облаке.** Если `pg02` пересобран
   или потерян, `pg03`, возможно, потребуется пересобрать; проверяйте
   `pg_replication_slots` и `pg_stat_wal_receiver`.
@@ -1200,7 +1566,9 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
   не настроены, поэтому индексы будут расти до ручной очистки.
 - **Valkey**: AOF/RDB хранятся локально на `pg01`; централизованного backup
   нет. Для важных данных настройте копирование dump-ов отдельно.
-- **Нет управления DNS** и автоматического Let's Encrypt.
+- **Нет управления DNS**: записи `gitlab-test` и `elastik` должны указывать
+  на публичные адреса соответствующих ВМ. Let's Encrypt для GitLab и Kibana
+  настраивается и продлевается автоматически.
 - **Приложения не деплоятся**: Docker-хосты только подготовлены.
 - **rclone jobs пусты по умолчанию**: нет NFS/SSH-монтирования бэкапов
   других хостов; настройте `rclone_jobs` и источник данных.

@@ -3,6 +3,11 @@ server.port: {{ kibana_port }}
 server.host: "{{ kibana_host }}"
 server.name: "{{ inventory_hostname }}"
 server.publicBaseUrl: "{{ kibana_public_base_url }}"
+{% if kibana_tls_enabled | bool %}
+server.ssl.enabled: true
+server.ssl.certificate: {{ kibana_tls_cert_path }}
+server.ssl.key: {{ kibana_tls_key_path }}
+{% endif %}
 elasticsearch.hosts: ["http://{{ elasticsearch_http_host }}:{{ elasticsearch_http_port }}"]
 {% if elasticsearch_security_enabled | bool %}
 elasticsearch.username: "kibana_system"

@@ -16,6 +16,9 @@ provisioning/proxmox/vault.yml
 *.p12
 *.pfx
 
+# PostgreSQL private CA and server certificates (generated on the controller)
+files/postgres-tls/
+
 # Editors
 .idea/
 .vscode/

@@ -84,6 +84,48 @@
 - name: Configure GitLab backups
   when: gitlab_backup_enabled | bool
   block:
+    - name: Validate the GitLab S3 backup settings
+      ansible.builtin.assert:
+        that:
+          - gitlab_backup_s3_bucket | length > 0
+          - gitlab_backup_s3_endpoint | length > 0
+          - "'example.com' not in gitlab_backup_s3_endpoint"
+          - gitlab_backup_s3_access_key_id | length > 0
+          - gitlab_backup_s3_secret_access_key | length > 0
+          - "'ChangeMe' not in (gitlab_backup_s3_access_key_id ~ gitlab_backup_s3_secret_access_key)"
+        fail_msg: >-
+          gitlab_backup_s3_enabled=true requires a bucket, endpoint and real
+          vault_gitlab_backup_s3_* credentials.
+      when: gitlab_backup_s3_enabled | bool
+      no_log: true
+
+    - name: Install rclone for GitLab S3 backups
+      ansible.builtin.apt:
+        name:
+          - rclone
+          - ca-certificates
+        state: present
+      when: gitlab_backup_s3_enabled | bool
+
+    - name: Create the rclone configuration directory
+      ansible.builtin.file:
+        path: "{{ gitlab_backup_rclone_config | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: gitlab_backup_s3_enabled | bool
+
+    - name: Deploy the GitLab backup rclone configuration
+      ansible.builtin.template:
+        src: rclone.conf.j2
+        dest: "{{ gitlab_backup_rclone_config }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: gitlab_backup_s3_enabled | bool
+      no_log: true
+
     - name: Install the GitLab backup script
       ansible.builtin.template:
         src: gitlab-backup.sh.j2

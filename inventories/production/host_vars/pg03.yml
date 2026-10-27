@@ -1,16 +1,22 @@
 ---
-# pg03 is in another cloud and is not provisioned by Proxmox.
-# Replace this placeholder with the real address. It is not used as an
-# upstream today, but keeps the topology explicit for future replicas.
-postgres_replication_address: "203.0.113.14"
+# pg03 is in another cloud and is not provisioned by Proxmox. PostgreSQL uses
+# only public addresses; this is the public address of pg03 and is included in
+# its server certificate SAN. It is not an upstream today, but keeps the
+# topology explicit for future replicas.
+postgres_replication_address: "168.113.135.163"
 
-# The actual source CIDR that pg02 sees is defined in
+# The public source CIDR that pg02 sees is defined in
 # group_vars/postgres_cascading.yml. Override it here if the NAT egress differs
-# from the management address:
+# from the public address:
 # postgres_replication_source_cidr: "203.0.113.14/32"
 
-# SSH/Ansible access from the second cloud is defined in
-# group_vars/postgres_cascading.yml. Replace that placeholder before bootstrap.
+# pg03 accepts application connections from the hosts listed in
+# postgres_app_client_rules. It has no downstream replicas, so it has no
+# inbound replication rule.
+firewall_extra_rules: "{{ postgres_app_client_rules }}"
+
+# SSH/Ansible access is open from any address, like every other VM. fail2ban
+# handles brute-force attempts; there is no admin-network allowlist.
 
 # To rebuild only pg03, uncomment the next line and run:
 #   ansible-playbook playbooks/postgres.yml --limit pg02,pg03 --ask-vault-pass

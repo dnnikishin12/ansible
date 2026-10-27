@@ -6,25 +6,25 @@ base backup-ы в **два независимых S3-совместимых хр
 backup существуют в двух копиях. Реплики WAL не архивируют: они получают
 данные потоковой репликацией и при необходимости пересобираются с upstream.
 
-Конфигурация перенесена со старого сервера (`campbox-recovery`): WAL-G 3.0.9,
-PostgreSQL 18, S3 VK Cloud, `zstd`, шифрование libsodium.
+Роль использует WAL-G 3.0.9, PostgreSQL 18, VK Cloud Object Storage как
+primary и Yandex Cloud Object Storage как secondary, `zstd` и шифрование
+libsodium. Оба таргета обязательны: каждый WAL и каждый base backup
+существуют в двух копиях.
 
 ## Совместимость со старым сервером
 
-Старый сервер использовал тот же префикс
-`s3://db-backup/db/pg18/main-encrypted-v1` и ключ
-`/etc/wal-g/libsodium-v1.hex`. Чтобы восстановить его бэкапы, задайте в
-`vault_walg_libsodium_key` **тот же ключ**, который был на старом сервере, и
-тот же `postgres_walg_s3_prefix`. Ключ из `campbox-recovery` в репозиторий не
-попал; его нужно забрать со старого хоста или из хранилища секретов.
+Для этого кластера используется новый libsodium-ключ, сохранённый в
+`vault_walg_libsodium_key`. Бэкапы старого сервера `campbox-recovery` были
+зашифрованы другим ключом (`/etc/wal-g/libsodium-v1.hex`) и лежали в
+префиксе `s3://db-backup/db/pg18/main-encrypted-v1`; текущим ключом их
+прочитать нельзя. Если старые бэкапы нужны, сохраните старый ключ отдельно
+и используйте для них отдельный WAL-G config. Не направляйте два primary в
+один префикс одновременно.
 
 Файл `config-plaintext.json` из `campbox-recovery` относится к старому
 незашифрованному префиксу `s3://db-backup/db/pg18/main`. Роль его не
 использует; для чтения таких бэкапов нужен отдельный конфиг без
 `WALG_LIBSODIUM_*`.
-
-При переключении на новый сервер остановите PostgreSQL/WAL-G на старом:
-два primary не должны одновременно архивировать WAL в один префикс.
 
 ## Что создаётся на primary
 
@@ -46,14 +46,14 @@ PostgreSQL 18, S3 VK Cloud, `zstd`, шифрование libsodium.
 
 ```yaml
 postgres_walg_enabled: true
-postgres_walg_s3_prefix: "s3://db-backup/db/pg{{ postgres_version }}/main-encrypted-v1"
+postgres_walg_s3_prefix: "s3://tlcamp-db-backup/db/pg{{ postgres_version }}/main-encrypted-v1"
 postgres_walg_s3_endpoint: "https://hb.ru-msk.vkcloud-storage.ru"
 postgres_walg_s3_region: "ru-msk"
 
 postgres_walg_secondary_enabled: true
-postgres_walg_secondary_s3_prefix: "s3://db-backup-secondary/db/pg{{ postgres_version }}/main-encrypted-v1"
-postgres_walg_secondary_s3_endpoint: "https://hb.ru-msk.vkcloud-storage.ru"
-postgres_walg_secondary_s3_region: "ru-msk"
+postgres_walg_secondary_s3_prefix: "s3://tlcamp-db-backup/db/pg{{ postgres_version }}/main-encrypted-v1"
+postgres_walg_secondary_s3_endpoint: "https://storage.yandexcloud.net"
+postgres_walg_secondary_s3_region: "ru-central1"
 
 postgres_walg_full_schedule: "Sun *-*-* 02:00:00"
 postgres_walg_diff_schedule: "*-*-* 03:00:00"
@@ -67,11 +67,11 @@ postgres_walg_archive_timeout: "60s"
 указывается в `postgres_walg_schedule_timezone` (по умолчанию
 `common_timezone`, то есть `Europe/Moscow`).
 
-По умолчанию `postgres_walg_secondary_s3_prefix` содержит заглушку
-`CHANGE-ME`; роль намеренно завершится ошибкой, пока вы не укажете реальный
-бакет второго S3. Это защищает от ситуации, когда «две копии» фактически
-пишутся в одно и то же место. Чтобы временно оставить одну копию, задайте
-`postgres_walg_secondary_enabled: false`.
+Оба S3-таргета обязательны. Роль проверяет, что secondary отличается от
+primary хотя бы bucket/prefix или endpoint. Для VK и Yandex используется
+один и тот же bucket `tlcamp-db-backup`, поэтому различие обеспечивается
+endpoint. Чтобы осознанно оставить одну копию, задайте
+`postgres_walg_secondary_enabled: false` (не рекомендуется).
 
 WAL-G делает full backup, а diff-бэкапы строятся от последнего full
 (`WALG_DELTA_ORIGIN=LATEST_FULL`). После каждого full выполняется
@@ -122,25 +122,27 @@ sudo -u postgres /usr/local/bin/wal-g copy \
 
 ## Секреты
 
-В `vault.yml` должны быть три обязательные переменные:
+В `vault.yml` должны быть пять переменных: credentials обоих облаков и
+общий ключ шифрования.
 
 ```yaml
+# VK Cloud (primary)
 vault_walg_s3_access_key_id: "..."
 vault_walg_s3_secret_access_key: "..."
-vault_walg_libsodium_key: "..."   # ровно 64 hex-символа
-```
 
-Если второй S3 находится в другом аккаунте, добавьте его credentials:
-
-```yaml
+# Yandex Cloud (secondary)
 vault_walg_secondary_s3_access_key_id: "..."
 vault_walg_secondary_s3_secret_access_key: "..."
+
+# Общий ключ для обеих копий, ровно 64 hex-символа
+vault_walg_libsodium_key: "..."
 ```
 
-Если эти две переменные не заданы, для второго S3 используются ключи
-`vault_walg_s3_access_key_id` и `vault_walg_s3_secret_access_key`. Ключ
-шифрования `vault_walg_libsodium_key` общий для обеих копий: без него
-невозможно восстановить ни primary, ни secondary.
+Ключ шифрования `vault_walg_libsodium_key` общий для обеих копий: без него
+невозможно восстановить ни primary, ни secondary. Secondary credentials
+обязательны, потому что Yandex Cloud использует отдельный service account;
+fallback на ключи VK Cloud остаётся только для случая, когда оба S3
+действительно используют один аккаунт.
 
 Ключ генерируется так:
 

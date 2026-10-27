@@ -6,7 +6,7 @@ ANSIBLE_PLAYBOOK := $(VENV)/bin/ansible-playbook
 ANSIBLE_LINT := $(VENV)/bin/ansible-lint
 PLAYBOOKS := $(wildcard playbooks/*.yml)
 
-.PHONY: help deps lint syntax inventory ping check provision bootstrap site verify gitlab postgres docker elk filebeat nginx maintenance vault-edit clean
+.PHONY: help deps lint syntax inventory ping check provision bootstrap site verify verify-postgres gitlab postgres postgres-tls docker elk filebeat nginx maintenance vault-edit clean
 
 help:
 	@echo "Available targets:"
@@ -16,12 +16,14 @@ help:
 	@echo "  inventory   Print the parsed inventory graph"
 	@echo "  ping        Check SSH connectivity to every host"
 	@echo "  check       Dry-run the full site playbook (--check --diff)"
-	@echo "  provision   Create/update VMs in Proxmox VE"
+	@echo "  provision   Create/update VMs in Proxmox VE (optional, not in site)"
 	@echo "  bootstrap   Base OS configuration (users, SSH, firewall, NTP)"
 	@echo "  site        Full configuration of all services"
 	@echo "  verify      Post-deploy health checks"
+	@echo "  verify-postgres PostgreSQL replication, TLS and WAL-G checks only"
 	@echo "  gitlab      Configure the GitLab VM"
 	@echo "  postgres    Configure PostgreSQL primary, first-level/cascading replicas and Valkey"
+	@echo "  postgres-tls Check and renew PostgreSQL TLS certificates only"
 	@echo "  docker      Configure Docker hosts"
 	@echo "  elk         Configure Elasticsearch, Logstash and Kibana"
 	@echo "  filebeat    Configure Filebeat log shipping"
@@ -72,11 +74,17 @@ site: deps
 verify: deps
 	$(ANSIBLE_PLAYBOOK) playbooks/verify.yml $(VAULT_ARGS)
 
+verify-postgres: deps
+	$(ANSIBLE_PLAYBOOK) playbooks/verify.yml --tags verify_postgres $(VAULT_ARGS)
+
 gitlab: deps
 	$(ANSIBLE_PLAYBOOK) playbooks/gitlab.yml $(VAULT_ARGS)
 
 postgres: deps
 	$(ANSIBLE_PLAYBOOK) playbooks/postgres.yml $(VAULT_ARGS)
+
+postgres-tls: deps
+	$(ANSIBLE_PLAYBOOK) playbooks/postgres.yml --tags postgres_tls $(VAULT_ARGS)
 
 docker: deps
 	$(ANSIBLE_PLAYBOOK) playbooks/docker.yml $(VAULT_ARGS)

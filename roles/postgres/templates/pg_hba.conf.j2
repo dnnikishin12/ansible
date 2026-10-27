@@ -5,10 +5,14 @@ local   all             all                                     peer
 host    all             all             127.0.0.1/32            scram-sha-256
 host    all             all             ::1/128                 scram-sha-256
 
+{% if postgres_client_networks %}
+# Application clients use hostssl; plaintext TCP is rejected when TLS is on.
 {% for network in postgres_client_networks %}
-host    all             all             {{ network }}           scram-sha-256
+{{ 'hostssl' if postgres_tls_enabled | bool else 'host' }}    all             all             {{ network }}           scram-sha-256
 {% endfor %}
+{% endif %}
 
 {% for replica in postgres_downstream_replicas | default([]) %}
-host    replication     {{ postgres_replication_user }}  {{ hostvars[replica].postgres_replication_source_cidr | default((hostvars[replica].ansible_host | default(replica)) ~ '/32', true) }}  scram-sha-256
+# hostssl rejects unencrypted replication connections when TLS is enabled.
+{{ 'hostssl' if postgres_tls_enabled | bool else 'host' }}    replication     {{ postgres_replication_user }}  {{ hostvars[replica].postgres_replication_source_cidr | default((hostvars[replica].ansible_host | default(replica)) ~ '/32', true) }}  scram-sha-256
 {% endfor %}

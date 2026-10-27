@@ -40,7 +40,7 @@
     exclusive: false
   loop: "{{ common_admin_authorized_keys }}"
   loop_control:
-    label: "key #{{ ansible_loop.index }}"
+    label: "admin SSH key"
   when: common_manage_admin_user | bool
 
 - name: Configure passwordless sudo for the administrative user

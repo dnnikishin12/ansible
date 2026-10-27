@@ -15,6 +15,14 @@
 - name: Install PostgreSQL packages
   ansible.builtin.import_tasks: install.yml
 
+# Deploy certificates before configure.yml writes ssl_cert_file/ssl_key_file
+# and before any replica runs pg_basebackup over TLS.
+- name: Configure PostgreSQL TLS certificates
+  ansible.builtin.import_tasks: tls.yml
+  when: postgres_tls_enabled | bool
+  tags:
+    - postgres_tls
+
 - name: Remove the legacy logical backup units
   ansible.builtin.import_tasks: backup-legacy.yml
   when: inventory_hostname in groups['postgres_primary'] | default([])

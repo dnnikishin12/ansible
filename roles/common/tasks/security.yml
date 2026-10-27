@@ -58,7 +58,7 @@
       loop_control:
         label: "{{ item.direction }} -> {{ item.policy }}"
 
-    - name: Allow SSH from management networks
+    - name: Allow SSH from configured sources
       community.general.ufw:
         rule: allow
         port: "{{ common_ssh_port }}"
@@ -77,6 +77,17 @@
       loop: "{{ common_firewall_rules + (firewall_extra_rules | default([])) }}"
       loop_control:
         label: "{{ item.port }}/{{ item.proto | default('tcp') }}"
+
+    - name: Allow service ports from explicit source lists
+      community.general.ufw:
+        rule: allow
+        port: "{{ item.0.port }}"
+        proto: "{{ item.0.proto | default('tcp') }}"
+        from_ip: "{{ item.1 }}"
+      loop: "{{ common_firewall_source_rules | subelements('sources') }}"
+      loop_control:
+        label: "{{ item.0.port }}/{{ item.0.proto | default('tcp') }} <- {{ item.1 }}"
+      when: common_firewall_source_rules | length > 0
 
     - name: Enable UFW
       community.general.ufw:

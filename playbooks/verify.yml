@@ -5,6 +5,7 @@
   hosts: all
   become: true
   gather_facts: false
+  tags: [verify, verify_services]
   tasks:
     - name: Wait for the SSH connection
       ansible.builtin.wait_for_connection:
@@ -46,6 +47,7 @@
   hosts: postgres
   become: true
   gather_facts: false
+  tags: [verify, verify_postgres]
   tasks:
     - name: Import the PostgreSQL replication topology facts
       ansible.builtin.import_tasks: ../roles/postgres/tasks/topology.yml
@@ -128,6 +130,11 @@
               again.
           when: postgres_walg_secondary_enabled | default(true) | bool
 
+    - name: Determine which downstream replicas are part of this verification run
+      ansible.builtin.set_fact:
+        postgres_verify_downstream_replicas: >-
+          {{ postgres_downstream_replicas | intersect(ansible_play_hosts_all) }}
+
     - name: Count streaming downstream replicas
       community.postgresql.postgresql_query:
         query: >-
@@ -142,7 +149,77 @@
       changed_when: false
       failed_when: >-
         (postgres_replication.query_result[0].replicas | int) !=
-        (postgres_downstream_replicas | length)
+        (postgres_verify_downstream_replicas | length)
+
+    - name: Verify that PostgreSQL has TLS enabled
+      community.postgresql.postgresql_query:
+        query: "SELECT current_setting('ssl') AS ssl"
+        login_user: postgres
+        login_unix_socket: /var/run/postgresql
+      become: true
+      become_user: postgres
+      register: postgres_ssl_setting
+      changed_when: false
+      failed_when: postgres_ssl_setting.query_result[0].ssl != 'on'
+      when: postgres_tls_enabled | default(true) | bool
+
+    - name: Verify that remote PostgreSQL client rules require TLS
+      community.postgresql.postgresql_query:
+        query: >-
+          SELECT count(*) AS insecure
+          FROM pg_hba_file_rules
+          WHERE type = 'host'
+            AND address::inet NOT IN ('127.0.0.1'::inet, '::1'::inet)
+        login_user: postgres
+        login_unix_socket: /var/run/postgresql
+      become: true
+      become_user: postgres
+      register: postgres_client_tls_rules
+      changed_when: false
+      failed_when: (postgres_client_tls_rules.query_result[0].insecure | int) != 0
+      when: postgres_tls_enabled | default(true) | bool
+
+    - name: Read the PostgreSQL server certificate
+      ansible.builtin.command:
+        cmd: >-
+          openssl x509
+          -in {{ postgres_tls_cert_path | default('/etc/postgresql/' ~ postgres_version ~ '/main/tls/server.crt') }}
+          -noout -ext subjectAltName
+      register: postgres_server_cert_san
+      changed_when: false
+      when: postgres_tls_enabled | default(true) | bool
+
+    - name: Verify that the public PostgreSQL address is in the certificate SAN
+      ansible.builtin.assert:
+        that:
+          - postgres_replication_address in postgres_server_cert_san.stdout
+        fail_msg: >-
+          The public address {{ postgres_replication_address }} is missing
+          from the certificate SAN on {{ inventory_hostname }}. Applications
+          and replicas using sslmode=verify-full will reject the certificate.
+      when: postgres_tls_enabled | default(true) | bool
+
+    - name: Verify that downstream replication connections use TLS
+      community.postgresql.postgresql_query:
+        query: >-
+          SELECT count(*) AS total,
+                 count(*) FILTER (WHERE ssl) AS encrypted
+          FROM pg_stat_replication r
+          JOIN pg_stat_ssl s ON s.pid = r.pid
+        login_user: postgres
+        login_unix_socket: /var/run/postgresql
+      become: true
+      become_user: postgres
+      register: postgres_replication_tls
+      changed_when: false
+      failed_when: >-
+        (postgres_replication_tls.query_result[0].total | int) !=
+        (postgres_verify_downstream_replicas | length)
+        or (postgres_replication_tls.query_result[0].encrypted | int) !=
+        (postgres_verify_downstream_replicas | length)
+      when:
+        - postgres_tls_enabled | default(true) | bool
+        - postgres_verify_downstream_replicas | length > 0
 
     - name: Verify that a replica is running in recovery
       community.postgresql.postgresql_query:
@@ -170,26 +247,83 @@
         or postgres_wal_receiver.query_result[0].status != 'streaming'
       when: inventory_hostname in groups['postgres_replicas'] | default([])
 
-- name: Verify reverse proxy upstreams
-  hosts: nginx
+- name: Verify direct public HTTPS endpoints
+  hosts: localhost
+  connection: local
+  become: false
   gather_facts: false
+  tags: [verify, verify_public]
   tasks:
-    - name: Check GitLab through the nginx upstream
+    - name: Check GitLab over HTTPS
       ansible.builtin.uri:
-        url: "http://{{ nginx_gitlab_upstream }}:{{ nginx_gitlab_upstream_port }}/-/health"
+        url: "https://{{ gitlab_hostname }}/users/sign_in"
         status_code: 200
-      register: gitlab_upstream_health
-      until: gitlab_upstream_health.status | default(0) == 200
+      register: gitlab_public_health
+      until: gitlab_public_health.status | default(0) == 200
       retries: 30
       delay: 5
       changed_when: false
 
-    - name: Check Kibana through the nginx upstream
+    - name: Check Kibana over HTTPS
       ansible.builtin.uri:
-        url: "http://{{ nginx_kibana_upstream }}:{{ nginx_kibana_upstream_port }}/api/status"
+        url: "https://{{ kibana_hostname }}/api/status"
         status_code: [200, 401]
-      register: kibana_upstream_health
-      until: kibana_upstream_health.status | default(0) in [200, 401]
+      register: kibana_public_health
+      until: kibana_public_health.status | default(0) in [200, 401]
       retries: 30
       delay: 5
       changed_when: false
+
+- name: Verify GitLab S3 backups
+  hosts: gitlab
+  become: true
+  gather_facts: false
+  tags: [verify, verify_gitlab]
+  tasks:
+    - name: Check that the GitLab backup timer is active  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl is-active --quiet gitlab-backup.timer
+      changed_when: false
+
+    - name: Verify access to the GitLab backup bucket
+      ansible.builtin.command:
+        cmd: >-
+          rclone lsd
+          {{ gitlab_backup_rclone_remote }}:{{ gitlab_backup_s3_bucket }}/{{ gitlab_backup_s3_prefix }}
+          --config {{ gitlab_backup_rclone_config }}
+      changed_when: false
+      when: gitlab_backup_s3_enabled | bool
+
+- name: Verify firewall exposure
+  hosts: gitlab:elk
+  become: true
+  gather_facts: false
+  tags: [verify, verify_firewall]
+  tasks:
+    - name: Read UFW status
+      ansible.builtin.command:
+        cmd: ufw status verbose
+      register: ufw_status
+      changed_when: false
+
+    - name: Check that only expected ports are exposed
+      ansible.builtin.assert:
+        that:
+          - "'22/tcp' in ufw_status.stdout"
+          - "'80/tcp' in ufw_status.stdout"
+          - "'443/tcp' in ufw_status.stdout"
+          - "'5601' not in ufw_status.stdout"
+          - "'203.0.113.' not in ufw_status.stdout"
+        fail_msg: "Unexpected UFW exposure on {{ inventory_hostname }}"
+
+    - name: Check that Logstash accepts only project VMs
+      ansible.builtin.assert:
+        that: >-
+          (ufw_status.stdout_lines
+           | select('match', '^5044/tcp')
+           | map('regex_replace', '^5044/tcp\\s+ALLOW\\s+IN\\s+', '')
+           | map('trim')
+           | sort)
+          == (logstash_allowed_sources | sort)
+        fail_msg: "Unexpected Logstash source list on {{ inventory_hostname }}"
+      when: inventory_hostname in (groups['elk'] | default([]))

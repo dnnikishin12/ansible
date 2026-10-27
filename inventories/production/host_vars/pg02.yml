@@ -1,20 +1,26 @@
 ---
 # pg02 is the first-level standby and the upstream for pg03 in another cloud.
-# Set this to the address that pg03 can reach: a public IP, NAT address or VPN
-# address. The default would be the private inventory address.
-postgres_replication_address: "203.0.113.13"
+# This is the public address that pg03 and the app hosts use. The address is
+# included in the server certificate SANs automatically, so sslmode=verify-full
+# works over the public internet.
+postgres_replication_address: "136.234.13.107"
 
-# Listen on all interfaces so that a public/NAT address can reach pg02. UFW
-# and pg_hba still restrict :5432 to the internal network and pg03 only.
-postgres_listen_addresses: "0.0.0.0"
+# Public source address that pg01 sees when pg02 connects to it. Set this to
+# pg02's NAT/egress address if it differs from its public address.
+postgres_replication_source_cidr: "136.234.13.107/32"
 
-# This host-level list replaces firewall_extra_rules from
-# group_vars/postgres_replicas.yml, so repeat the internal rule and add pg03.
-# UFW uses the source CIDR that pg02 sees, not pg03's management address.
-firewall_extra_rules:
-  - port: "5432"
-    proto: "tcp"
-    from: "{{ internal_network }}"
-  - port: "5432"
-    proto: "tcp"
-    from: "{{ hostvars['pg03'].postgres_replication_source_cidr | default('203.0.113.14/32') }}"
+# pg02 accepts application connections from the hosts listed in
+# postgres_app_client_rules and replication from pg03's public source. No
+# other PostgreSQL sources are allowed; there is no internal-network rule.
+firewall_extra_rules: >-
+  {{
+    postgres_app_client_rules
+    + [
+        {
+          'port': '5432',
+          'proto': 'tcp',
+          'from': hostvars['pg03'].postgres_replication_source_cidr
+                  | default('203.0.113.14/32')
+        }
+      ]
+  }}

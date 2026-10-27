@@ -3,6 +3,7 @@ external_url '{{ gitlab_external_url }}'
 gitlab_rails['time_zone'] = '{{ gitlab_time_zone }}'
 gitlab_rails['initial_root_password'] = {{ gitlab_initial_root_password | to_json }}
 gitlab_rails['gitlab_shell_ssh_port'] = {{ gitlab_shell_ssh_port }}
+gitlab_rails['monitoring_whitelist'] = {{ gitlab_monitoring_whitelist | to_json }}
 gitlab_rails['backup_path'] = "{{ gitlab_backup_dir }}"
 gitlab_rails['backup_keep_time'] = {{ gitlab_backup_keep_days | int * 86400 }}
 
@@ -27,6 +28,9 @@ letsencrypt['enable'] = false
 {% endif %}
 
 prometheus_monitoring['enable'] = {{ gitlab_prometheus_enabled | to_json }}
+{% if gitlab_alertmanager_cluster_advertise_address | default('') | length > 0 %}
+alertmanager['flags'] = { 'cluster.advertise-address' => {{ gitlab_alertmanager_cluster_advertise_address | to_json }} }
+{% endif %}
 
 {% if gitlab_smtp_enabled | bool %}
 gitlab_rails['smtp_enable'] = true

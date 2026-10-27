@@ -1,5 +1,6 @@
 ---
 # Proxmox VE connection and VM definitions.
+# This provisioning playbook is optional and is not called by site.yml.
 # The API password comes from vault_proxmox_api_password.
 proxmox_api_host: "pve.campbox.tech"
 proxmox_api_user: "ansible@pve"
@@ -13,9 +14,9 @@ proxmox_storage: "local-lvm"
 proxmox_clone_format: "unspecified"
 proxmox_disk_interface: "virtio0"
 proxmox_bridge: "vmbr0"
-proxmox_gateway: "10.10.10.1"
+proxmox_gateway: "203.0.113.1"
 proxmox_nameservers:
-  - "10.10.10.1"
+  - "203.0.113.1"
   - "1.1.1.1"
 proxmox_searchdomain: "campbox.tech"
 proxmox_ciuser: "ubuntu"
@@ -23,15 +24,17 @@ proxmox_ssh_public_keys: "{{ vault_admin_authorized_keys | default([]) }}"
 
 # Sizes are starting points. Adjust to the actual capacity plan.
 # IP addresses of the VMs listed here must match inventories/production/hosts.yml.
-# pg03 is intentionally absent: it runs in another cloud and is not provisioned
-# by this Proxmox playbook.
+# All addresses are public placeholders from 203.0.113.0/24; replace them with
+# the real public IPs and gateway of your Proxmox network. pg03 and
+# docker-prod-02 are intentionally absent: they run in another cloud and are
+# not provisioned by this Proxmox playbook.
 proxmox_vms:
   - name: gitlab01
     vmid: 101
     cores: 4
     memory: 8192
     disk: 100
-    ip: "10.10.10.11/24"
+    ip: "203.0.113.11/24"
     tags: [gitlab]
 
   - name: pg01
@@ -39,7 +42,7 @@ proxmox_vms:
     cores: 4
     memory: 16384
     disk: 200
-    ip: "10.10.10.12/24"
+    ip: "203.0.113.12/24"
     tags: [postgres, valkey]
 
   - name: pg02
@@ -47,7 +50,7 @@ proxmox_vms:
     cores: 4
     memory: 16384
     disk: 200
-    ip: "10.10.10.13/24"
+    ip: "203.0.113.13/24"
     tags: [postgres, replica]
 
   - name: docker-prod-01
@@ -55,15 +58,7 @@ proxmox_vms:
     cores: 4
     memory: 8192
     disk: 100
-    ip: "10.10.10.15/24"
-    tags: [docker, production]
-
-  - name: docker-prod-02
-    vmid: 106
-    cores: 4
-    memory: 8192
-    disk: 100
-    ip: "10.10.10.16/24"
+    ip: "203.0.113.15/24"
     tags: [docker, production]
 
   - name: docker-test-01
@@ -71,7 +66,7 @@ proxmox_vms:
     cores: 6
     memory: 8192
     disk: 128
-    ip: "10.10.10.17/24"
+    ip: "203.0.113.17/24"
     tags: [docker, test]
 
   - name: elk01
@@ -79,7 +74,7 @@ proxmox_vms:
     cores: 4
     memory: 16384
     disk: 200
-    ip: "10.10.10.18/24"
+    ip: "203.0.113.18/24"
     tags: [elk]
 
   - name: nginx01
@@ -87,7 +82,7 @@ proxmox_vms:
     cores: 2
     memory: 2048
     disk: 40
-    ip: "10.10.10.19/24"
+    ip: "203.0.113.19/24"
     tags: [nginx]
 
   - name: maint01
@@ -95,5 +90,5 @@ proxmox_vms:
     cores: 2
     memory: 2048
     disk: 50
-    ip: "10.10.10.20/24"
+    ip: "203.0.113.20/24"
     tags: [maintenance, rclone]

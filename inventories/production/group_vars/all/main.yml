@@ -3,13 +3,13 @@
 # Global settings
 # ---------------------------------------------------------------------------
 internal_domain: "campbox.tech"
-internal_network: "10.10.10.0/24"
 environment_name: "production"
 
-gitlab_hostname: "gitlab.{{ internal_domain }}"
-kibana_hostname: "kibana.{{ internal_domain }}"
+gitlab_hostname: "gitlab-test.{{ internal_domain }}"
+kibana_hostname: "elastik.{{ internal_domain }}"
 
-ansible_user: "ubuntu"
+ansible_user: "root"
+ansible_ssh_private_key_file: "/home/service/.ssh/id_ed25519_ansible"
 ansible_python_interpreter: "/usr/bin/python3"
 # New VMs are provisioned with a fresh host key. This trusts it on first
 # contact while still protecting against later key changes.
@@ -77,15 +77,18 @@ common_fail2ban_enabled: true
 common_fail2ban_bantime: "1h"
 common_fail2ban_findtime: "10m"
 common_fail2ban_maxretry: 5
-common_fail2ban_ignoreips:
-  - "{{ internal_network }}"
+# No admin/CI whitelist: fail2ban may ban any public or private source
+# address. The fail2ban template keeps only the standard loopback exception.
+common_fail2ban_ignoreips: []
 
 common_firewall_enabled: true
 common_firewall_default_incoming: "deny"
 common_firewall_default_outgoing: "allow"
-# Restrict SSH to the management network. Add your own admin CIDR here!
+# SSH is intentionally reachable from any IPv4/IPv6 address. Brute-force
+# protection is provided by fail2ban, not by a source allowlist.
 common_firewall_ssh_sources:
-  - "{{ internal_network }}"
+  - "0.0.0.0/0"
+  - "::/0"
 common_firewall_rules: []
 
 common_sysctl:
@@ -100,6 +103,10 @@ common_sysctl_extra: {}
 # ---------------------------------------------------------------------------
 # Cross-service defaults
 # ---------------------------------------------------------------------------
+# Elastic's official artifacts CDN returns 403 for this network. The Tsinghua
+# mirror carries the same signed Elastic 9.x repository and is used by both the
+# ELK host and every Filebeat log shipper.
+elastic_stack_repo_url: "https://mirrors.tuna.tsinghua.edu.cn/elasticstack/9.x/apt"
 # Default retention for locally produced backups. The maintenance VM can copy
 # them to object storage using the rclone role.
 local_backup_keep_days: 7

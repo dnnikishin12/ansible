@@ -3,8 +3,6 @@ postgres_role: "replica"
 # Set to true to force a full pg_basebackup and wipe the replica data directory.
 postgres_replica_rebuild: false
 
-# pg02 additionally allows pg03 from the second cloud in host_vars/pg02.yml.
-firewall_extra_rules:
-  - port: "5432"
-    proto: "tcp"
-    from: "{{ internal_network }}"
+# All PostgreSQL servers allow the app hosts from postgres_app_client_rules.
+# Replica-to-upstream rules are host-specific: pg02 additionally allows pg03
+# in host_vars/pg02.yml. No internal-network rules are used.

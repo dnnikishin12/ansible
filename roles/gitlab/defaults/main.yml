@@ -8,6 +8,14 @@ gitlab_trusted_proxies: []
 gitlab_initial_root_password: "{{ vault_gitlab_root_password | default('') }}"
 gitlab_time_zone: "UTC"
 gitlab_shell_ssh_port: 22
+# Health and monitoring endpoints are localhost-only by default. Behind the
+# reverse proxy, allow the proxy address so upstream health checks work.
+gitlab_monitoring_whitelist:
+  - "127.0.0.1"
+  - "::1"
+# Alertmanager cannot auto-detect an advertise address on public-only VMs.
+# Set this to "<ip>:9094" when the host has no private address.
+gitlab_alertmanager_cluster_advertise_address: ""
 
 gitlab_letsencrypt_enable: false
 gitlab_letsencrypt_contact_emails: []
@@ -24,7 +32,10 @@ gitlab_smtp_tls: false
 gitlab_smtp_from: "gitlab@localhost"
 
 gitlab_prometheus_enabled: true
-gitlab_health_url: "http://127.0.0.1:{{ gitlab_nginx_listen_port }}/-/health"
+gitlab_health_url: >-
+  {{ ('http://127.0.0.1:' ~ gitlab_nginx_listen_port ~ '/-/health')
+     if (gitlab_behind_proxy | bool)
+     else 'https://127.0.0.1/-/health' }}
 gitlab_health_retries: 90
 gitlab_health_delay: 10
 
@@ -32,3 +43,17 @@ gitlab_backup_enabled: true
 gitlab_backup_dir: "/var/opt/gitlab/backups"
 gitlab_backup_keep_days: 7
 gitlab_backup_schedule: "*-*-* 02:30:00"
+
+# Optional S3-compatible upload of the backup archive, gitlab.rb and
+# gitlab-secrets.json. Credentials are kept in the encrypted vault.
+gitlab_backup_s3_enabled: false
+gitlab_backup_s3_bucket: ""
+gitlab_backup_s3_endpoint: ""
+gitlab_backup_s3_region: "us-east-1"
+gitlab_backup_s3_prefix: "{{ inventory_hostname }}"
+gitlab_backup_s3_access_key_id: "{{ vault_gitlab_backup_s3_access_key_id | default('') }}"
+gitlab_backup_s3_secret_access_key: "{{ vault_gitlab_backup_s3_secret_access_key | default('') }}"
+gitlab_backup_s3_keep_days: 30
+gitlab_backup_rclone_remote: "gitlab-backup"
+gitlab_backup_rclone_config: "/etc/rclone/rclone.conf"
+gitlab_backup_rclone_force_path_style: true

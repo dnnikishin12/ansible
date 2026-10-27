@@ -1,12 +1,22 @@
 ---
+# gitlab01 is exposed directly to the internet: bundled GitLab nginx
+# terminates TLS and obtains a Let's Encrypt certificate itself. There is no
+# external reverse proxy in front of this host.
 gitlab_external_url: "https://{{ gitlab_hostname }}"
-gitlab_behind_proxy: true
-gitlab_nginx_listen_port: 80
-gitlab_nginx_listen_https: false
-gitlab_trusted_proxies:
-  - "{{ hostvars[groups['nginx'][0]].ansible_host }}"
+gitlab_behind_proxy: false
+gitlab_trusted_proxies: []
+gitlab_monitoring_whitelist:
+  - "127.0.0.1"
+  - "::1"
+  - "{{ ansible_default_ipv4.address }}"
+gitlab_alertmanager_cluster_advertise_address: "{{ ansible_default_ipv4.address }}:9094"
+gitlab_health_url: "https://127.0.0.1/-/health"
 gitlab_initial_root_password: "{{ vault_gitlab_root_password | default('') }}"
 gitlab_time_zone: "{{ common_timezone }}"
+
+gitlab_letsencrypt_enable: true
+gitlab_letsencrypt_contact_emails:
+  - "admin@{{ internal_domain }}"
 
 gitlab_smtp_enabled: false
 gitlab_smtp_address: ""
@@ -23,7 +33,21 @@ gitlab_backup_enabled: true
 gitlab_backup_keep_days: "{{ local_backup_keep_days }}"
 gitlab_backup_schedule: "*-*-* 02:30:00"
 
+# GitLab backup copies are uploaded to VK Cloud Object Storage after every
+# local backup. The bucket is private; credentials live in the vault.
+gitlab_backup_s3_enabled: true
+gitlab_backup_s3_bucket: "tlcamp-gitlab-backup"
+gitlab_backup_s3_endpoint: "https://hb.ru-msk.vkcloud-storage.ru"
+gitlab_backup_s3_region: "ru-msk"
+gitlab_backup_s3_prefix: "{{ inventory_hostname }}"
+gitlab_backup_s3_keep_days: 30
+gitlab_backup_s3_access_key_id: "{{ vault_gitlab_backup_s3_access_key_id | default('') }}"
+gitlab_backup_s3_secret_access_key: "{{ vault_gitlab_backup_s3_secret_access_key | default('') }}"
+gitlab_backup_rclone_remote: "gitlab-backup"
+gitlab_backup_rclone_config: "/etc/rclone/rclone.conf"
+
 firewall_extra_rules:
   - port: "80"
     proto: "tcp"
-    from: "{{ hostvars[groups['nginx'][0]].ansible_host }}"
+  - port: "443"
+    proto: "tcp"

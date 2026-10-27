@@ -4,7 +4,7 @@ bantime = {{ common_fail2ban_bantime }}
 findtime = {{ common_fail2ban_findtime }}
 maxretry = {{ common_fail2ban_maxretry }}
 backend = systemd
-ignoreip = 127.0.0.1/8 ::1 {{ common_fail2ban_ignoreips | join(' ') }}
+ignoreip = 127.0.0.1/8 ::1{% if common_fail2ban_ignoreips %} {{ common_fail2ban_ignoreips | join(' ') }}{% endif %}
 
 [sshd]
 enabled = true
