@@ -1,7 +1,0 @@
----
-- name: Ship logs to Logstash
-  hosts: log_shippers
-  become: true
-  roles:
-    - role: filebeat
-      tags: [filebeat, logging]

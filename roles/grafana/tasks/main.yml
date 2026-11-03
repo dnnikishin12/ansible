@@ -9,6 +9,19 @@
       (at least 12 characters, not the ChangeMe placeholder).
   no_log: true
 
+- name: Validate the Telegram alerting settings
+  ansible.builtin.assert:
+    that:
+      - grafana_telegram_bot_token | length >= 10
+      - grafana_telegram_chat_id | length >= 1
+      - "'ChangeMe' not in grafana_telegram_bot_token"
+      - "'ChangeMe' not in grafana_telegram_chat_id"
+    fail_msg: >-
+      Set vault_grafana_telegram_bot_token and vault_grafana_telegram_chat_id
+      in the encrypted vault, or disable grafana_alerting_enabled.
+  no_log: true
+  when: grafana_alerting_enabled | bool
+
 - name: Download the Grafana package
   ansible.builtin.get_url:
     url: "{{ grafana_deb_url }}"
@@ -47,6 +60,7 @@
   loop:
     - /etc/grafana/provisioning/datasources
     - /etc/grafana/provisioning/dashboards
+    - "{{ grafana_alerting_dir }}"
     - "{{ grafana_dashboards_dir }}"
 
 - name: Check whether the VictoriaLogs plugin is installed
@@ -111,14 +125,56 @@
     mode: "0644"
   notify: Restart Grafana
 
-- name: Deploy the TLCamp dashboard
+- name: Deploy the TLCamp dashboards
   ansible.builtin.copy:
-    src: dashboards/tlcamp-overview.json
-    dest: "{{ grafana_dashboards_dir }}/tlcamp-overview.json"
+    src: dashboards/
+    dest: "{{ grafana_dashboards_dir }}/"
     owner: "{{ grafana_user }}"
     group: "{{ grafana_group }}"
     mode: "0644"
   notify: Restart Grafana
+
+- name: Deploy the Grafana alerting contact point
+  ansible.builtin.template:
+    src: alerting-contact-points.yml.j2
+    dest: "{{ grafana_alerting_dir }}/contact-points.yml"
+    owner: root
+    group: "{{ grafana_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart Grafana
+  when: grafana_alerting_enabled | bool
+
+- name: Deploy the Grafana notification policy
+  ansible.builtin.template:
+    src: alerting-policies.yml.j2
+    dest: "{{ grafana_alerting_dir }}/policies.yml"
+    owner: root
+    group: "{{ grafana_group }}"
+    mode: "0640"
+  notify: Restart Grafana
+  when: grafana_alerting_enabled | bool
+
+- name: Deploy the Grafana alert rules
+  ansible.builtin.template:
+    src: alerting-rules.yml.j2
+    dest: "{{ grafana_alerting_dir }}/rules.yml"
+    owner: root
+    group: "{{ grafana_group }}"
+    mode: "0640"
+  notify: Restart Grafana
+  when: grafana_alerting_enabled | bool
+
+- name: Remove Grafana alerting provisioning when disabled
+  ansible.builtin.file:
+    path: "{{ grafana_alerting_dir }}/{{ item }}"
+    state: absent
+  loop:
+    - contact-points.yml
+    - policies.yml
+    - rules.yml
+  notify: Restart Grafana
+  when: not grafana_alerting_enabled | bool
 
 - name: Install the Grafana configuration
   ansible.builtin.template:
@@ -127,6 +183,7 @@
     owner: root
     group: "{{ grafana_group }}"
     mode: "0640"
+  no_log: true
   notify: Restart Grafana
 
 - name: Create the Grafana systemd drop-in directory

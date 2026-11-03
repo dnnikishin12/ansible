@@ -1,6 +1,0 @@
----
-filebeat_logstash_host: "{{ hostvars[groups['elk'][0]].ansible_host }}"
-filebeat_logstash_port: 5044
-filebeat_environment: "{{ environment_name | default('production') }}"
-filebeat_bulk_max_size: 2048
-filebeat_worker: 2

@@ -1,0 +1,12 @@
+# Managed by Ansible
+apiVersion: 1
+contactPoints:
+  - orgId: 1
+    name: telegram
+    receivers:
+      - uid: tlcamp-telegram
+        type: telegram
+        disableResolveMessage: false
+        settings:
+          bottoken: {{ grafana_telegram_bot_token | to_json }}
+          chatid: {{ grafana_telegram_chat_id | to_json }}

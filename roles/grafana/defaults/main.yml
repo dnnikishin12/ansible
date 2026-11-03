@@ -29,3 +29,95 @@ grafana_victorialogs_plugin_url: >-
      ~ '.zip' }}
 grafana_plugins_dir: "/var/lib/grafana/plugins"
 grafana_dashboards_dir: "/var/lib/grafana/dashboards"
+
+# Alerting is provisioned as code. Telegram is the delivery channel.
+grafana_alerting_enabled: true
+grafana_alerting_dir: "/etc/grafana/provisioning/alerting"
+grafana_telegram_bot_token: "{{ vault_grafana_telegram_bot_token | default('') | string }}"
+grafana_telegram_chat_id: "{{ vault_grafana_telegram_chat_id | default('') | string }}"
+
+# Each rule is rendered as query -> reduce -> threshold by provisioning.
+grafana_alert_rules:
+  - uid: tlcamp_instance_down
+    title: Instance down
+    expr: "up"
+    comparator: lt
+    threshold: 1
+    for: 2m
+    severity: critical
+    summary: "Scrape target is down."
+  - uid: tlcamp_endpoint_down
+    title: Public endpoint down
+    expr: "probe_success"
+    comparator: lt
+    threshold: 1
+    for: 2m
+    severity: critical
+    summary: "Blackbox HTTP/TLS probe failed."
+  - uid: tlcamp_cert_expiring
+    title: TLS certificate expires soon
+    expr: "probe_ssl_earliest_cert_expiry - time()"
+    comparator: lt
+    threshold: 1209600
+    for: 10m
+    severity: warning
+    summary: "A TLS certificate expires within 14 days."
+  - uid: tlcamp_host_cpu_high
+    title: Host CPU usage high
+    expr: '100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)'
+    comparator: gt
+    threshold: 90
+    for: 10m
+    severity: warning
+    summary: "Host CPU usage is above 90%."
+  - uid: tlcamp_host_memory_high
+    title: Host memory usage high
+    expr: '(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100'
+    comparator: gt
+    threshold: 90
+    for: 10m
+    severity: warning
+    summary: "Host memory usage is above 90%."
+  - uid: tlcamp_host_disk_low
+    title: Host disk space low
+    expr: >-
+      max by (instance, mountpoint)
+      ((1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|iso9660"}
+      / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|iso9660"}) * 100)
+    comparator: gt
+    threshold: 85
+    for: 10m
+    severity: warning
+    summary: "Filesystem usage is above 85%."
+  - uid: tlcamp_postgres_down
+    title: PostgreSQL is down
+    expr: "pg_up"
+    comparator: lt
+    threshold: 1
+    for: 2m
+    severity: critical
+    summary: "postgres_exporter cannot reach PostgreSQL."
+  - uid: tlcamp_postgres_replica_lag
+    title: PostgreSQL replica replay lag high
+    expr: "pg_replication_lag_seconds"
+    comparator: gt
+    threshold: 300
+    for: 5m
+    severity: warning
+    summary: "Replica replay lag is above 300 seconds."
+  - uid: tlcamp_postgres_wal_lag
+    title: PostgreSQL WAL lag high
+    expr: "pg_stat_replication_pg_wal_lsn_diff"
+    comparator: gt
+    threshold: 268435456
+    for: 10m
+    severity: warning
+    summary: "A replica is more than 256 MiB behind its upstream."
+  - uid: tlcamp_postgres_slot_inactive
+    title: PostgreSQL replication slot inactive
+    expr: "pg_replication_slots_active"
+    comparator: lt
+    threshold: 1
+    for: 5m
+    severity: warning
+    summary: "A replication slot has no active consumer."

@@ -21,6 +21,8 @@
       tags: [observability, tls]
     - role: victorialogs
       tags: [observability, logs, victorialogs]
+    - role: blackbox_exporter
+      tags: [observability, metrics, blackbox_exporter]
     - role: victoriametrics
       tags: [observability, metrics, victoriametrics]
     - role: grafana

@@ -1,6 +1,0 @@
----
-elastic_stack_version: "9.x"
-elastic_stack_gpg_key_url: "https://artifacts.elastic.co/GPG-KEY-elasticsearch"
-elastic_stack_gpg_key_path: "/usr/share/keyrings/elasticsearch-keyring.gpg"
-elastic_stack_gpg_key_asc_path: "{{ elastic_stack_gpg_key_path }}.asc"
-elastic_stack_repo_url: "https://artifacts.elastic.co/packages/{{ elastic_stack_version }}/apt"

@@ -1,0 +1,22 @@
+[Unit]
+Description=Prometheus Blackbox Exporter
+Documentation=https://github.com/prometheus/blackbox_exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ blackbox_exporter_user }}
+Group={{ blackbox_exporter_group }}
+ExecStart=/usr/local/bin/blackbox_exporter \
+  --config.file={{ blackbox_exporter_conf_dir }}/blackbox.yml \
+  --web.listen-address={{ blackbox_exporter_listen_address }}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

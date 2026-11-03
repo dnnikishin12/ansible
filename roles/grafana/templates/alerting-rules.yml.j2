@@ -1,0 +1,88 @@
+# Managed by Ansible
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: tlcamp-infrastructure
+    folder: TLCamp
+    interval: 1m
+    rules:
+{% for rule in grafana_alert_rules %}
+      - uid: {{ rule.uid }}
+        title: {{ rule.title }}
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: victoriametrics
+            model:
+              datasource:
+                type: prometheus
+                uid: victoriametrics
+              editorMode: code
+              expr: '{{ rule.expr }}'
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: []
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - {{ rule.threshold }}
+                    type: {{ rule.comparator }}
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: NoData
+        execErrState: Error
+        for: {{ rule.for }}
+        annotations:
+          summary: {{ rule.summary | to_json }}
+        labels:
+          severity: {{ rule.severity }}
+        isPaused: false
+{% endfor %}

@@ -1,0 +1,85 @@
+---
+- name: Create the blackbox_exporter group
+  ansible.builtin.group:
+    name: "{{ blackbox_exporter_group }}"
+    system: true
+
+- name: Create the blackbox_exporter user
+  ansible.builtin.user:
+    name: "{{ blackbox_exporter_user }}"
+    group: "{{ blackbox_exporter_group }}"
+    home: /nonexistent
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+
+- name: Create the blackbox_exporter configuration directory
+  ansible.builtin.file:
+    path: "{{ blackbox_exporter_conf_dir }}"
+    state: directory
+    owner: root
+    group: "{{ blackbox_exporter_group }}"
+    mode: "0750"
+
+- name: Download blackbox_exporter
+  ansible.builtin.get_url:
+    url: "{{ blackbox_exporter_download_url }}"
+    dest: >-
+      /tmp/blackbox_exporter-{{ blackbox_exporter_version }}.linux-{{ blackbox_exporter_arch }}.tar.gz
+    checksum: "sha256:{{ blackbox_exporter_checksums[blackbox_exporter_arch] }}"
+    mode: "0644"
+
+- name: Extract blackbox_exporter
+  ansible.builtin.unarchive:
+    src: >-
+      /tmp/blackbox_exporter-{{ blackbox_exporter_version }}.linux-{{ blackbox_exporter_arch }}.tar.gz
+    dest: /tmp
+    remote_src: true
+    creates: "{{ blackbox_exporter_extract_dir }}/blackbox_exporter"
+
+- name: Install the blackbox_exporter binary
+  ansible.builtin.copy:
+    src: "{{ blackbox_exporter_extract_dir }}/blackbox_exporter"
+    dest: /usr/local/bin/blackbox_exporter
+    owner: root
+    group: root
+    mode: "0755"
+    remote_src: true
+  notify: Restart blackbox_exporter
+
+- name: Deploy the blackbox_exporter configuration
+  ansible.builtin.template:
+    src: blackbox.yml.j2
+    dest: "{{ blackbox_exporter_conf_dir }}/blackbox.yml"
+    owner: root
+    group: "{{ blackbox_exporter_group }}"
+    mode: "0640"
+  notify: Restart blackbox_exporter
+
+- name: Install the blackbox_exporter systemd unit
+  ansible.builtin.template:
+    src: blackbox_exporter.service.j2
+    dest: /etc/systemd/system/blackbox_exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart blackbox_exporter
+
+- name: Ensure blackbox_exporter is enabled and running
+  ansible.builtin.systemd:
+    name: blackbox_exporter.service
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for the blackbox_exporter metrics endpoint
+  ansible.builtin.uri:
+    url: "http://{{ blackbox_exporter_listen_address }}/metrics"
+    status_code: 200
+  register: blackbox_exporter_health
+  retries: 12
+  delay: 5
+  until: blackbox_exporter_health.status | default(0) == 200
+  changed_when: false

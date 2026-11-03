@@ -186,7 +186,9 @@ PostgreSQL использует те же публичные адреса, чт�
    `vault_gitlab_backup_s3_access_key_id` и
    `vault_gitlab_backup_s3_secret_access_key`.
    Для наблюдаемости задайте `vault_grafana_admin_password`,
-   `vault_victorialogs_password` и `vault_postgres_exporter_password`.
+   `vault_victorialogs_password`, `vault_postgres_exporter_password`, а для
+   алертов — `vault_grafana_telegram_bot_token` и
+   `vault_grafana_telegram_chat_id`.
    Для архива логов задайте `vault_logs_s3_bucket`, endpoint, region и
    credentials `vault_logs_s3_*`; если они не заданы, используются
    credentials rclone или WAL-G. Bucket `tlcamp-logs` (или значение
@@ -412,6 +414,8 @@ Ansible как group vars для всех хостов. Файл зашифро�
 | `vault_grafana_admin_password` | пароль администратора Grafana |
 | `vault_victorialogs_password` | пароль basic auth для Vector и datasource Grafana |
 | `vault_postgres_exporter_password` | пароль роли `postgres_exporter` с `pg_monitor` |
+| `vault_grafana_telegram_bot_token` | токен Telegram-бота для Grafana Alerting |
+| `vault_grafana_telegram_chat_id` | chat ID получателя алертов |
 | `vault_logs_s3_bucket` | bucket для архива логов (по умолчанию `tlcamp-logs`) |
 | `vault_logs_s3_endpoint` | endpoint S3-совместимого хранилища |
 | `vault_logs_s3_region` | region для S3 sink |
@@ -776,7 +780,7 @@ ansible all -m ansible.builtin.command -a "cloud-init status --wait"
 | `postgres.yml` | `postgres_primary`, `postgres_replicas`, `postgres_cascading`, `valkey` | PostgreSQL 18: primary, реплика первого уровня и каскадная реплика + Valkey |
 | `gitlab.yml` | `gitlab` | GitLab CE + backup timer |
 | `docker.yml` | `docker_prod`, `docker_test` | Docker Engine, daemon.json, prune timer, Vector |
-| `observability.yml` | `all`, `postgres`, `observability` | node_exporter, postgres_exporter, Grafana, VictoriaLogs, VictoriaMetrics |
+| `observability.yml` | `all`, `postgres`, `observability` | node_exporter, postgres_exporter, Blackbox Exporter, Grafana, VictoriaLogs, VictoriaMetrics |
 | `nginx.yml` | `nginx` | TLS, reverse proxy для GitLab |
 | `maintenance.yml` | `maintenance` | rclone, systemd timers |
 | `verify.yml` | `all`, `postgres`, `observability`, `docker`, `nginx` | smoke-проверки, включая каскадную репликацию |
@@ -1081,7 +1085,7 @@ nginx. Если разработчики подключаются из друг�
 > Для строгой фильтрации добавьте `ufw-docker` или настройте `DOCKER-USER`
 > вручную.
 
-### Наблюдаемость: Grafana, VictoriaLogs, VictoriaMetrics
+### Наблюдаемость: Grafana, VictoriaLogs, VictoriaMetrics, Blackbox
 
 - `node_exporter` на всех ВМ (`:9100`, UFW только с `obs01`);
 - `postgres_exporter` на PostgreSQL-хостах (`:9187`, UFW только с `obs01`);
@@ -1090,14 +1094,23 @@ nginx. Если разработчики подключаются из друг�
   опрашивает node/postgres exporters;
 - VictoriaLogs single-node на `obs01`, слушает `:9428` с TLS и basic auth;
   retention `30d`, порог использования диска `80%`;
+- Blackbox Exporter на `obs01`, слушает `127.0.0.1:9115`; проверяет
+  HTTP(S)-доступность GitLab, Grafana и VictoriaLogs и срок действия TLS-
+  сертификатов (`probe_success`, `probe_ssl_earliest_cert_expiry`);
 - Grafana на `obs01`, слушает `:443` с тем же TLS-сертификатом, что и
-  VictoriaLogs; datasource-ы и dashboard провижинятся автоматически;
+  VictoriaLogs; datasource-ы, dashboards и alert rules провижинятся из
+  репозитория;
+- Grafana Alerting отправляет уведомления в Telegram: 10 базовых правил —
+  недоступность scrape-цели и HTTP-эндпоинта, сертификат истекает < 14 дней,
+  CPU/RAM > 90%, диск > 85%, `pg_up = 0`, replay lag > 300 с, WAL lag
+  > 256 МиБ и неактивный replication slot;
 - Vector на Docker-хостах: `docker_logs` → обогащение (`host`,
   `environment`, `dataset`) → HTTP sink в VictoriaLogs и `aws_s3` sink;
 - S3-архив использует дисковый буфер, gzip и NDJSON; ключи объектов имеют
   вид `docker/<environment>/<host>/<год>/<месяц>/<день>/<час>/...`;
-- Grafana dashboard `TLCamp Overview`: CPU, память, диск, load average, сеть,
-  `pg_up`, WAL lag, replay lag и панель логов контейнеров.
+- дашборды: `TLCamp Overview` (CPU, память, диск, сеть, `pg_up`, WAL/replay
+  lag, логи), `PostgreSQL Replication` (каскад `pg01 → pg02 → pg03`) и
+  `TLCamp Observability` (цели scrape, blackbox-пробы, сертификаты, диск).
 
 Проверка:
 
@@ -1106,16 +1119,25 @@ nginx. Если разработчики подключаются из друг�
 curl -fsS http://127.0.0.1:8428/health
 curl -u shipper -k https://127.0.0.1:9428/health
 curl -k https://127.0.0.1:443/api/health
+curl -fsS http://127.0.0.1:9115/metrics >/dev/null
 
 # цели scrape
 curl -fsS 'http://127.0.0.1:8428/api/v1/targets?state=active' | jq .
+
+# provisioned alerting
+curl -u admin -k https://127.0.0.1:443/api/v1/provisioning/alert-rules | jq length
+curl -u admin -k https://127.0.0.1:443/api/v1/provisioning/contact-points | jq .
 
 # на Docker-хосте
 systemctl status vector
 curl -fsS http://127.0.0.1:8686/health
 ```
 
-Пароли Grafana и VictoriaLogs задаются в vault. Bucket для логов должен
+Пароли Grafana и VictoriaLogs задаются в vault. Для алертов создайте бота
+через `@BotFather`, добавьте его в нужный чат и задайте
+`vault_grafana_telegram_bot_token` и `vault_grafana_telegram_chat_id`.
+Пока ключей нет, роль остановится на assert; временно можно выключить
+алертинг через `grafana_alerting_enabled: false`. Bucket для логов должен
 существовать заранее; Vector не создаёт bucket и не управляет lifecycle.
 При потере связи с S3 Vector буферизует события на диск и повторяет отправку
 (at-least-once, возможны дубликаты).
@@ -1480,7 +1502,8 @@ GitLab backup не включает конфигурацию, секреты, Re
   (ограничен UFW) и часть служебного трафика между хостами. Для строгих
   требований поднимите VPN/private network.
 - Grafana и VictoriaLogs используют basic auth и общий TLS-сертификат;
-  пароли хранятся в vault. Для production настройте алертинг в Grafana.
+  пароли хранятся в vault. Grafana Alerting отправляет уведомления в Telegram;
+  токен бота и chat ID также хранятся в vault.
 - Резервные копии содержат секреты (GitLab secrets, дампы БД). Защищайте S3
   и локальные каталоги. S3-архив логов также может содержать чувствительные
   данные приложений.
@@ -1492,9 +1515,9 @@ GitLab backup не включает конфигурацию, секреты, Re
 - `StrictHostKeyChecking=accept-new` доверяет ключу при первом подключении.
   Для повышенных требований заранее добавьте fingerprint-ы в `known_hosts`
   и используйте строгую проверку.
-- Централизованный сбор логов контейнеров и метрики есть, но алертинг по
-  умолчанию не настроен. Добавьте alert rules в Grafana и проверку S3
-  lifecycle.
+- Alert rules, contact point и notification policy провижинятся из
+  репозитория. Проверку S3 lifecycle и тестовую доставку алерта в Telegram
+  нужно выполнить отдельно после деплоя.
 
 ## Проверка и диагностика
 
@@ -1591,6 +1614,8 @@ journalctl -u vector -n 100 --no-pager
 | Не восстанавливается зашифрованный бэкап | тот же `vault_walg_libsodium_key`, что при создании; без него restore невозможен |
 | `postgres_replica_rebuild` | после пересборки верните `false` |
 | Grafana не открывается / 502 | сертификат в `/etc/ssl/observability`, `grafana.ini`, `systemctl status grafana-server`, UFW `443` |
+| Алерты не приходят в Telegram | `vault_grafana_telegram_*`, бот добавлен в чат, `curl https://api.telegram.org` с `obs01`, `journalctl -u grafana-server`, тест contact point в UI |
+| Blackbox-проба падает | `curl -k <target>` с `obs01`, DNS, срок сертификата, `probe_success`/`probe_ssl_earliest_cert_expiry` в VictoriaMetrics, `journalctl -u blackbox_exporter` |
 | Vector не читает Docker-сокет | пользователь `vector` в группе `docker`, `systemctl restart vector`, `journalctl -u vector` |
 | Логи не появляются в VictoriaLogs | `curl -u shipper -k https://grafana.<domain>:9428/health`, UFW `9428` с Docker-хостов, пароль в vault, `journalctl -u vector` |
 | Нет метрик хоста/PG | `up{job="node"}` / `up{job="postgres"}` в VictoriaMetrics, UFW `9100`/`9187`, `postgres_exporter` и пароль `pg_monitor` |
@@ -1642,8 +1667,16 @@ journalctl -u vector -n 100 --no-pager
 - **Приложения не деплоятся**: Docker-хосты только подготовлены.
 - **rclone jobs пусты по умолчанию**: нет NFS/SSH-монтирования бэкапов
   других хостов; настройте `rclone_jobs` и источник данных.
-- **Алертинг не настроен**: метрики и логи собираются, но alert rules в
-  Grafana нужно добавить отдельно.
+- **Алертинг базовый**: десять правил покрывают недоступность scrape-целей и
+  HTTP-эндпоинтов, сертификаты, CPU/RAM/диск, репликацию PostgreSQL и
+  неактивные replication slots. Нет дежурств, эскалации, mute timings и
+  проверок ICMP/TCP; правила и пороги задаются в
+  `roles/grafana/defaults/main.yml`.
+- **Мониторинг живёт на `obs01`**: Grafana, VictoriaMetrics, VictoriaLogs и
+  Blackbox находятся на одном хосте. При падении `obs01` или потере сети
+  алерты не будут доставлены; для критичных сервисов нужен внешний
+  dead-man's switch (например, проверка `https://grafana.<domain>/api/health`
+  с другого хоста).
 - **Нет автоматического restore-теста.** Резервные копии нужно регулярно
   проверять вручную.
 - **Версии GitLab/Docker не зафиксированы**; версии компонентов
@@ -1703,6 +1736,7 @@ journalctl -u vector -n 100 --no-pager
 │   └── proxmox/
 │       └── vars.yml
 └── roles/
+    ├── blackbox_exporter/
     ├── common/
     ├── docker/
     ├── gitlab/

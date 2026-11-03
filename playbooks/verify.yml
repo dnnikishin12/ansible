@@ -335,6 +335,45 @@
         and (victoriametrics_postgres.json.data.result[0].value[1] | int) > 0
       changed_when: false
 
+    - name: Check the Blackbox Exporter health endpoint
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ blackbox_exporter_port | default(9115) }}/metrics"
+        status_code: 200
+      register: blackbox_exporter_verify_health
+      retries: 18
+      delay: 5
+      until: blackbox_exporter_verify_health.status | default(0) == 200
+      changed_when: false
+
+    - name: Check that VictoriaMetrics scrapes the Blackbox probes
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:8428/api/v1/query?query={{
+          'count(up{job=~"blackbox.*"} == 1)' | urlencode }}
+        status_code: 200
+      register: victoriametrics_blackbox
+      retries: 30
+      delay: 5
+      until: >-
+        victoriametrics_blackbox.json.data.result | default([]) | length > 0
+        and (victoriametrics_blackbox.json.data.result[0].value[1] | int) > 0
+      changed_when: false
+
+    - name: Check that Blackbox probes succeed
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:8428/api/v1/query?query={{
+          'count(probe_success == 1)' | urlencode }}
+        status_code: 200
+      register: victoriametrics_blackbox_success
+      retries: 30
+      delay: 5
+      until: >-
+        victoriametrics_blackbox_success.json.data.result | default([]) | length > 0
+        and (victoriametrics_blackbox_success.json.data.result[0].value[1] | int)
+        >= ((blackbox_http_targets | length) + (blackbox_victorialogs_targets | length))
+      changed_when: false
+
     - name: Read provisioned Grafana datasources
       ansible.builtin.uri:
         url: "https://127.0.0.1:{{ grafana_port | default(443) }}/api/datasources"
@@ -354,6 +393,64 @@
             | difference(grafana_verify_datasources.json | map(attribute='name') | list)
             | length == 0
         fail_msg: "Grafana datasources are missing on {{ inventory_hostname }}"
+
+    - name: Read the provisioned Grafana dashboards
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ grafana_port | default(443) }}/api/search?type=dash-db"
+        user: "{{ grafana_admin_user | default('admin') }}"
+        password: "{{ vault_grafana_admin_password | default('') }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+      register: grafana_verify_dashboards
+      no_log: true
+
+    - name: Check that the Grafana dashboards were provisioned
+      ansible.builtin.assert:
+        that:
+          - >-
+            ['tlcamp-overview', 'tlcamp-postgres-replication', 'tlcamp-observability']
+            | difference(grafana_verify_dashboards.json | map(attribute='uid') | list)
+            | length == 0
+        fail_msg: "Grafana dashboards are missing on {{ inventory_hostname }}"
+
+    - name: Read provisioned Grafana contact points
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ grafana_port | default(443) }}/api/v1/provisioning/contact-points"
+        user: "{{ grafana_admin_user | default('admin') }}"
+        password: "{{ vault_grafana_admin_password | default('') }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+      register: grafana_verify_contact_points
+      no_log: true
+      when: grafana_alerting_enabled | default(true) | bool
+
+    - name: Check that the Telegram contact point exists
+      ansible.builtin.assert:
+        that:
+          - "'telegram' in (grafana_verify_contact_points.json | map(attribute='name') | list)"
+        fail_msg: "Grafana Telegram contact point is missing on {{ inventory_hostname }}"
+      when: grafana_alerting_enabled | default(true) | bool
+
+    - name: Read provisioned Grafana alert rules
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ grafana_port | default(443) }}/api/v1/provisioning/alert-rules"
+        user: "{{ grafana_admin_user | default('admin') }}"
+        password: "{{ vault_grafana_admin_password | default('') }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+      register: grafana_verify_alert_rules
+      no_log: true
+      when: grafana_alerting_enabled | default(true) | bool
+
+    - name: Check that Grafana alert rules were provisioned
+      ansible.builtin.assert:
+        that:
+          - grafana_verify_alert_rules.json | length >= 10
+        fail_msg: "Grafana alert rules are missing on {{ inventory_hostname }}"
+      when: grafana_alerting_enabled | default(true) | bool
 
 - name: Verify Vector on Docker hosts
   hosts: docker

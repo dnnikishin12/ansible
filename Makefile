@@ -21,7 +21,7 @@ help:
 	@echo "  site        Full configuration of all services"
 	@echo "  verify      Post-deploy health checks"
 	@echo "  verify-postgres PostgreSQL replication, TLS and WAL-G checks only"
-	@echo "  verify-observability VictoriaMetrics, VictoriaLogs and Grafana checks only"
+	@echo "  verify-observability VictoriaMetrics, VictoriaLogs, Blackbox and Grafana checks only"
 	@echo "  gitlab      Configure the GitLab VM"
 	@echo "  postgres    Configure PostgreSQL primary, first-level/cascading replicas and Valkey"
 	@echo "  postgres-tls Check and renew PostgreSQL TLS certificates only"

@@ -36,6 +36,11 @@ vault_valkey_password: "ChangeMe-Valkey-Password"
 vault_grafana_admin_password: "ChangeMe-Grafana-Admin"
 vault_victorialogs_password: "ChangeMe-VictoriaLogs-Shipper"
 
+# Grafana Alerting -> Telegram. Create a bot with @BotFather and get the chat
+# ID (for a group, add the bot to the group and use the negative group ID).
+vault_grafana_telegram_bot_token: "ChangeMe-Telegram-Bot-Token"
+vault_grafana_telegram_chat_id: "ChangeMe-Telegram-Chat-ID"
+
 # PostgreSQL postgres_exporter password (pg_monitor role on the primary).
 vault_postgres_exporter_password: "ChangeMe-Postgres-Exporter"
 

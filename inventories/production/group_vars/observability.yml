@@ -31,6 +31,14 @@ victorialogs_retention: "30d"
 victorialogs_retention_max_disk_usage_percent: 80
 victorialogs_auth_username: "shipper"
 
+# Blackbox probes run on obs01 and are scraped by VictoriaMetrics locally.
+blackbox_exporter_port: 9115
+blackbox_http_targets:
+  - "https://{{ gitlab_hostname }}/users/sign_in"
+  - "https://{{ observability_hostname }}/api/health"
+blackbox_victorialogs_targets:
+  - "https://{{ observability_hostname }}:{{ victorialogs_http_port }}/health"
+
 victoriametrics_http_addr: "127.0.0.1:8428"
 victoriametrics_retention: "12"
 victoriametrics_scrape_interval: "30s"

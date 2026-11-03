@@ -1,0 +1,26 @@
+# Managed by Ansible
+modules:
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      valid_status_codes:
+        - 200
+      tls_config:
+        insecure_skip_verify: false
+
+  # VictoriaLogs requires basic auth; the probe only needs to complete the
+  # TLS handshake and verify that the listener answers (200 or 401).
+  https_2xx_or_401:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      valid_status_codes:
+        - 200
+        - 401
+      tls_config:
+        insecure_skip_verify: false

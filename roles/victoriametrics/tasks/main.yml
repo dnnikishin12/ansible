@@ -59,6 +59,7 @@
     owner: root
     group: "{{ victoriametrics_group }}"
     mode: "0640"
+  no_log: true
   notify: Restart VictoriaMetrics
 
 - name: Install the VictoriaMetrics systemd unit
