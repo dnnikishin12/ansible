@@ -19,9 +19,15 @@ firewall_extra_rules: >-
           'port': '6379',
           'proto': 'tcp',
           'from': hostvars['docker-prod-01'].ansible_host ~ '/32'
+        },
+        {
+          'port': '6379',
+          'proto': 'tcp',
+          'from': '95.163.209.96/32'
         }
       ]
   }}
 # Valkey has no TLS. It is reachable over the public network only from the
-# first-cloud Docker hosts above; it is intentionally not exposed to
-# docker-prod-02 in the second cloud. Enable TLS before allowing it there.
+# first-cloud Docker host above and the external app server 95.163.209.96; it
+# is intentionally not exposed to docker-prod-02 in the second cloud. Enable
+# TLS before allowing it there.

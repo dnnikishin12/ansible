@@ -6,7 +6,7 @@ ANSIBLE_PLAYBOOK := $(VENV)/bin/ansible-playbook
 ANSIBLE_LINT := $(VENV)/bin/ansible-lint
 PLAYBOOKS := $(wildcard playbooks/*.yml)
 
-.PHONY: help deps lint syntax inventory ping check provision bootstrap site verify verify-postgres gitlab postgres postgres-tls docker elk filebeat nginx maintenance vault-edit clean
+.PHONY: help deps lint syntax inventory ping check provision bootstrap site verify verify-postgres verify-observability gitlab postgres postgres-tls docker observability nginx maintenance vault-edit clean
 
 help:
 	@echo "Available targets:"
@@ -21,12 +21,12 @@ help:
 	@echo "  site        Full configuration of all services"
 	@echo "  verify      Post-deploy health checks"
 	@echo "  verify-postgres PostgreSQL replication, TLS and WAL-G checks only"
+	@echo "  verify-observability VictoriaMetrics, VictoriaLogs and Grafana checks only"
 	@echo "  gitlab      Configure the GitLab VM"
 	@echo "  postgres    Configure PostgreSQL primary, first-level/cascading replicas and Valkey"
 	@echo "  postgres-tls Check and renew PostgreSQL TLS certificates only"
-	@echo "  docker      Configure Docker hosts"
-	@echo "  elk         Configure Elasticsearch, Logstash and Kibana"
-	@echo "  filebeat    Configure Filebeat log shipping"
+	@echo "  docker      Configure Docker hosts and Vector log shipping"
+	@echo "  observability Configure node/postgres exporters and the Grafana stack"
 	@echo "  nginx       Configure the reverse proxy"
 	@echo "  maintenance Configure rclone and backup jobs"
 	@echo "  vault-edit  Edit the encrypted vault file"
@@ -89,11 +89,11 @@ postgres-tls: deps
 docker: deps
 	$(ANSIBLE_PLAYBOOK) playbooks/docker.yml $(VAULT_ARGS)
 
-elk: deps
-	$(ANSIBLE_PLAYBOOK) playbooks/elk.yml $(VAULT_ARGS)
+observability: deps
+	$(ANSIBLE_PLAYBOOK) playbooks/observability.yml $(VAULT_ARGS)
 
-filebeat: deps
-	$(ANSIBLE_PLAYBOOK) playbooks/filebeat.yml $(VAULT_ARGS)
+verify-observability: deps
+	$(ANSIBLE_PLAYBOOK) playbooks/verify.yml --tags verify_observability $(VAULT_ARGS)
 
 nginx: deps
 	$(ANSIBLE_PLAYBOOK) playbooks/nginx.yml $(VAULT_ARGS)

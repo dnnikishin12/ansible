@@ -1,0 +1,31 @@
+---
+grafana_version: "13.3.0"
+grafana_deb_arch: >-
+  {{ {'x86_64': 'amd64', 'aarch64': 'arm64'}.get(ansible_architecture, 'amd64') }}
+grafana_deb_checksums:
+  amd64: "458cb47824fda2c1e93c51e5d9c4893543f7fe24c58c2f5cb9c7a91d7360070f"
+  arm64: "6e687b1e4d8a3545035a030a4e7e0bc632ffdb483f1487f912fb0b3673853c30"
+grafana_deb_url: >-
+  https://dl.grafana.com/oss/release/grafana_{{ grafana_version }}_{{ grafana_deb_arch }}.deb
+grafana_package: "grafana"
+grafana_user: "grafana"
+grafana_group: "grafana"
+grafana_port: 443
+grafana_hostname: "{{ observability_hostname | default('grafana.' ~ (internal_domain | default('example.com'))) }}"
+grafana_admin_user: "admin"
+grafana_admin_password: "{{ vault_grafana_admin_password | default('') }}"
+grafana_tls_cert_path: "{{ observability_tls_cert_path | default('/etc/ssl/observability/fullchain.pem') }}"
+grafana_tls_key_path: "{{ observability_tls_key_path | default('/etc/ssl/observability/privkey.pem') }}"
+grafana_victorialogs_password: >-
+  {{ victorialogs_auth_password | default(vault_victorialogs_password | default('')) }}
+
+grafana_victorialogs_plugin_version: "0.33.1"
+grafana_victorialogs_plugin_checksum: "73e7ce379ae9a9ce6fdb978e5d6d43f67029b4c3e4d970f1ca8f7f4617f331c5"
+grafana_victorialogs_plugin_release_base: >-
+  https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download
+grafana_victorialogs_plugin_url: >-
+  {{ grafana_victorialogs_plugin_release_base ~ '/v' ~ grafana_victorialogs_plugin_version
+     ~ '/victoriametrics-logs-datasource-v' ~ grafana_victorialogs_plugin_version
+     ~ '.zip' }}
+grafana_plugins_dir: "/var/lib/grafana/plugins"
+grafana_dashboards_dir: "/var/lib/grafana/dashboards"

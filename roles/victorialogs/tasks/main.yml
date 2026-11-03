@@ -1,0 +1,111 @@
+---
+- name: Validate the VictoriaLogs password
+  ansible.builtin.assert:
+    that:
+      - victorialogs_auth_password | length >= 16
+      - "'ChangeMe' not in victorialogs_auth_password"
+    fail_msg: >-
+      Set a real vault_victorialogs_password in the encrypted vault
+      (at least 16 characters, not the ChangeMe placeholder).
+  no_log: true
+
+- name: Create the VictoriaLogs group and user
+  ansible.builtin.group:
+    name: "{{ victorialogs_group }}"
+    system: true
+
+- name: Create the VictoriaLogs user
+  ansible.builtin.user:
+    name: "{{ victorialogs_user }}"
+    group: "{{ victorialogs_group }}"
+    groups: ssl-cert
+    append: true
+    home: "{{ victorialogs_data_dir }}"
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+
+- name: Create the VictoriaLogs directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ victorialogs_data_dir }}"
+      owner: "{{ victorialogs_user }}"
+      group: "{{ victorialogs_group }}"
+      mode: "0750"
+    - path: "{{ victorialogs_conf_dir }}"
+      owner: root
+      group: "{{ victorialogs_group }}"
+      mode: "0750"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Download VictoriaLogs
+  ansible.builtin.get_url:
+    url: "{{ victorialogs_download_url }}"
+    dest: "/tmp/victoria-logs-{{ victorialogs_version }}-{{ victorialogs_arch }}.tar.gz"
+    checksum: "sha256:{{ victorialogs_checksums[victorialogs_arch] }}"
+    mode: "0644"
+
+- name: Extract VictoriaLogs
+  ansible.builtin.unarchive:
+    src: "/tmp/victoria-logs-{{ victorialogs_version }}-{{ victorialogs_arch }}.tar.gz"
+    dest: "/tmp/victoria-logs-{{ victorialogs_version }}"
+    remote_src: true
+    creates: "/tmp/victoria-logs-{{ victorialogs_version }}/victoria-logs-prod"
+
+- name: Install the VictoriaLogs binary
+  ansible.builtin.copy:
+    src: "/tmp/victoria-logs-{{ victorialogs_version }}/victoria-logs-prod"
+    dest: /usr/local/bin/victoria-logs
+    owner: root
+    group: root
+    mode: "0755"
+    remote_src: true
+  notify: Restart VictoriaLogs
+
+- name: Store the VictoriaLogs shipper password
+  ansible.builtin.copy:
+    content: "{{ victorialogs_auth_password }}\n"
+    dest: "{{ victorialogs_conf_dir }}/auth-password"
+    owner: root
+    group: "{{ victorialogs_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart VictoriaLogs
+
+- name: Install the VictoriaLogs systemd unit
+  ansible.builtin.template:
+    src: victoria-logs.service.j2
+    dest: /etc/systemd/system/victoria-logs.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart VictoriaLogs
+
+- name: Ensure VictoriaLogs is enabled and running
+  ansible.builtin.systemd:
+    name: victoria-logs.service
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for the VictoriaLogs health endpoint
+  ansible.builtin.uri:
+    url: "{{ victorialogs_health_url }}"
+    user: "{{ victorialogs_auth_username }}"
+    password: "{{ victorialogs_auth_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    status_code: 200
+  register: victorialogs_health
+  retries: 18
+  delay: 5
+  until: victorialogs_health.status | default(0) == 200
+  changed_when: false

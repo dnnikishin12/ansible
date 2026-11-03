@@ -25,12 +25,15 @@
              if inventory_hostname in (groups['docker'] | default([])) else [])
           + (['gitlab-runsvdir.service']
              if inventory_hostname in (groups['gitlab'] | default([])) else [])
-          + (['elasticsearch.service', 'kibana.service', 'logstash.service']
-             if inventory_hostname in (groups['elk'] | default([])) else [])
+          + (['prometheus-node-exporter.service'])
+          + (['postgres_exporter.service']
+             if inventory_hostname in (groups['postgres'] | default([])) else [])
+          + (['victoria-logs.service', 'victoria-metrics.service', 'grafana-server.service']
+             if inventory_hostname in (groups['observability'] | default([])) else [])
           + (['nginx.service']
              if inventory_hostname in (groups['nginx'] | default([])) else [])
-          + (['filebeat.service']
-             if inventory_hostname in (groups['log_shippers'] | default([])) else []) }}"
+          + (['vector.service']
+             if inventory_hostname in (groups['docker'] | default([])) else []) }}"
 
     - name: Check that expected services are running
       ansible.builtin.assert:
@@ -252,7 +255,7 @@
   connection: local
   become: false
   gather_facts: false
-  tags: [verify, verify_public]
+  tags: [verify, verify_public, verify_observability]
   tasks:
     - name: Check GitLab over HTTPS
       ansible.builtin.uri:
@@ -264,14 +267,113 @@
       delay: 5
       changed_when: false
 
-    - name: Check Kibana over HTTPS
+    - name: Check Grafana over HTTPS
       ansible.builtin.uri:
-        url: "https://{{ kibana_hostname }}/api/status"
-        status_code: [200, 401]
-      register: kibana_public_health
-      until: kibana_public_health.status | default(0) in [200, 401]
+        url: "https://{{ grafana_hostname }}/api/health"
+        status_code: 200
+      register: grafana_public_health
+      until: grafana_public_health.status | default(0) == 200
       retries: 30
       delay: 5
+      changed_when: false
+
+- name: Verify the observability stack
+  hosts: observability
+  become: true
+  gather_facts: false
+  tags: [verify, verify_observability]
+  tasks:
+    - name: Check VictoriaLogs health
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ victorialogs_http_port | default(9428) }}/health"
+        user: "{{ victorialogs_auth_username | default('shipper') }}"
+        password: "{{ vault_victorialogs_password | default('') }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+      register: victorialogs_verify_health
+      retries: 18
+      delay: 5
+      until: victorialogs_verify_health.status | default(0) == 200
+      changed_when: false
+
+    - name: Check VictoriaMetrics health
+      ansible.builtin.uri:
+        url: "http://{{ victoriametrics_http_addr | default('127.0.0.1:8428') }}/health"
+        status_code: 200
+      register: victoriametrics_verify_health
+      retries: 18
+      delay: 5
+      until: victoriametrics_verify_health.status | default(0) == 200
+      changed_when: false
+
+    - name: Check that VictoriaMetrics sees node exporters
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:8428/api/v1/query?query={{
+          'count(up{job="node"} == 1)' | urlencode }}
+        status_code: 200
+      register: victoriametrics_nodes
+      retries: 30
+      delay: 5
+      until: >-
+        victoriametrics_nodes.json.data.result | default([]) | length > 0
+        and (victoriametrics_nodes.json.data.result[0].value[1] | int) > 0
+      changed_when: false
+
+    - name: Check that VictoriaMetrics sees postgres exporters
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:8428/api/v1/query?query={{
+          'count(up{job="postgres"} == 1)' | urlencode }}
+        status_code: 200
+      register: victoriametrics_postgres
+      retries: 30
+      delay: 5
+      until: >-
+        victoriametrics_postgres.json.data.result | default([]) | length > 0
+        and (victoriametrics_postgres.json.data.result[0].value[1] | int) > 0
+      changed_when: false
+
+    - name: Read provisioned Grafana datasources
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ grafana_port | default(443) }}/api/datasources"
+        user: "{{ grafana_admin_user | default('admin') }}"
+        password: "{{ vault_grafana_admin_password | default('') }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+      register: grafana_verify_datasources
+      no_log: true
+
+    - name: Check that Grafana has both datasources
+      ansible.builtin.assert:
+        that:
+          - >-
+            ['VictoriaMetrics', 'VictoriaLogs']
+            | difference(grafana_verify_datasources.json | map(attribute='name') | list)
+            | length == 0
+        fail_msg: "Grafana datasources are missing on {{ inventory_hostname }}"
+
+- name: Verify Vector on Docker hosts
+  hosts: docker
+  become: true
+  gather_facts: false
+  tags: [verify, verify_observability]
+  tasks:
+    - name: Check that Vector is running  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl is-active --quiet vector.service
+      changed_when: false
+
+    - name: Check the Vector API health endpoint
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8686/health
+        status_code: 200
+      register: vector_verify_health
+      retries: 18
+      delay: 5
+      until: vector_verify_health.status | default(0) == 200
       changed_when: false
 
 - name: Verify GitLab S3 backups
@@ -295,10 +397,10 @@
       when: gitlab_backup_s3_enabled | bool
 
 - name: Verify firewall exposure
-  hosts: gitlab:elk
+  hosts: gitlab:observability:nginx
   become: true
   gather_facts: false
-  tags: [verify, verify_firewall]
+  tags: [verify, verify_firewall, verify_observability]
   tasks:
     - name: Read UFW status
       ansible.builtin.command:
@@ -306,24 +408,25 @@
       register: ufw_status
       changed_when: false
 
-    - name: Check that only expected ports are exposed
+    - name: Check that only expected public ports are exposed
       ansible.builtin.assert:
         that:
           - "'22/tcp' in ufw_status.stdout"
           - "'80/tcp' in ufw_status.stdout"
           - "'443/tcp' in ufw_status.stdout"
           - "'5601' not in ufw_status.stdout"
+          - "'8428' not in ufw_status.stdout"
           - "'203.0.113.' not in ufw_status.stdout"
         fail_msg: "Unexpected UFW exposure on {{ inventory_hostname }}"
 
-    - name: Check that Logstash accepts only project VMs
+    - name: Check that VictoriaLogs accepts only Docker hosts
       ansible.builtin.assert:
         that: >-
           (ufw_status.stdout_lines
-           | select('match', '^5044/tcp')
-           | map('regex_replace', '^5044/tcp\\s+ALLOW\\s+IN\\s+', '')
+           | select('match', '^9428/tcp')
+           | map('regex_replace', '^9428/tcp\\s+ALLOW\\s+IN\\s+', '')
            | map('trim')
            | sort)
-          == (logstash_allowed_sources | sort)
-        fail_msg: "Unexpected Logstash source list on {{ inventory_hostname }}"
-      when: inventory_hostname in (groups['elk'] | default([]))
+          == (observability_ingest_sources | sort)
+        fail_msg: "Unexpected VictoriaLogs source list on {{ inventory_hostname }}"
+      when: inventory_hostname in (groups['observability'] | default([]))

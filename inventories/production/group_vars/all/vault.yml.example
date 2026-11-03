@@ -30,10 +30,23 @@ vault_postgres_admin_password: "ChangeMe-Postgres-Admin"
 # Valkey requirepass value.
 vault_valkey_password: "ChangeMe-Valkey-Password"
 
-# Elastic Stack credentials.
-vault_elastic_password: "ChangeMe-Elastic-Superuser"
-vault_kibana_system_password: "ChangeMe-Kibana-System"
-vault_logstash_internal_password: "ChangeMe-Logstash-Internal"
+# Observability stack.
+# Grafana admin password and the basic-auth password used by Vector and
+# Grafana when talking to VictoriaLogs.
+vault_grafana_admin_password: "ChangeMe-Grafana-Admin"
+vault_victorialogs_password: "ChangeMe-VictoriaLogs-Shipper"
+
+# PostgreSQL postgres_exporter password (pg_monitor role on the primary).
+vault_postgres_exporter_password: "ChangeMe-Postgres-Exporter"
+
+# Container-log archive to S3 (Vector aws_s3 sink). If these are omitted, the
+# Docker group falls back to the rclone or WAL-G S3 credentials. The bucket
+# below must already exist.
+vault_logs_s3_bucket: "tlcamp-logs"
+vault_logs_s3_endpoint: "https://s3.example.com"
+vault_logs_s3_region: "ru-msk"
+vault_logs_s3_access_key_id: "ChangeMe-Logs-S3-Access-Key"
+vault_logs_s3_secret_access_key: "ChangeMe-Logs-S3-Secret-Key"
 
 # WAL-G physical PostgreSQL backups to S3.
 # The libsodium key must be exactly 64 hex characters:

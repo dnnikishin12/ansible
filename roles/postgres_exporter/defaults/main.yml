@@ -1,0 +1,27 @@
+---
+postgres_exporter_version: "0.20.1"
+postgres_exporter_arch: >-
+  {{ {'x86_64': 'amd64', 'aarch64': 'arm64'}.get(ansible_architecture, 'amd64') }}
+postgres_exporter_checksums:
+  amd64: "89d4f7e7920cad48fdc3133f789556ef5253c330a9f5fdace3bdb6344c0a8b5a"
+  arm64: "d5d86fb98bb1f26b088d1a6fda07fd6b6f035cb5d40492f75ec3bfebb5ddfe9d"
+postgres_exporter_release_base: "https://github.com/prometheus-community/postgres_exporter/releases/download"
+postgres_exporter_download_url: >-
+  {{ postgres_exporter_release_base ~ '/v' ~ postgres_exporter_version
+     ~ '/postgres_exporter-' ~ postgres_exporter_version
+     ~ '.linux-' ~ postgres_exporter_arch ~ '.tar.gz' }}
+postgres_exporter_extract_dir: >-
+  {{ '/tmp/postgres_exporter-' ~ postgres_exporter_version
+     ~ '.linux-' ~ postgres_exporter_arch }}
+postgres_exporter_dsn: >-
+  {{ 'postgresql://' ~ postgres_exporter_db_user
+     ~ ':' ~ (postgres_exporter_password | urlencode)
+     ~ '@127.0.0.1:5432/postgres?sslmode=disable' }}
+
+postgres_exporter_user: "postgres-exporter"
+postgres_exporter_group: "postgres-exporter"
+postgres_exporter_port: 9187
+postgres_exporter_config_dir: "/etc/postgres-exporter"
+postgres_exporter_data_dir: "/var/lib/postgres-exporter"
+postgres_exporter_db_user: "postgres_exporter"
+postgres_exporter_password: "{{ vault_postgres_exporter_password | default('') }}"

@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: victorialogs
+  author: TLCamp Infrastructure
+  description: VictoriaLogs single-node log store with TLS and basic auth
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies: []

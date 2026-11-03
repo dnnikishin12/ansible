@@ -1,0 +1,39 @@
+---
+# One certificate covers both Grafana (:443) and VictoriaLogs (:9428).
+observability_letsencrypt_enabled: true
+observability_letsencrypt_email: "admin@{{ internal_domain }}"
+
+# Both services bind to public ports and terminate TLS themselves. Port 80 is
+# only used by certbot's standalone HTTP-01 challenge and can stay open.
+common_firewall_rules:
+  - port: "80"
+    proto: "tcp"
+  - port: "443"
+    proto: "tcp"
+
+# Vector runs on Docker hosts and pushes container logs to VictoriaLogs.
+# Documentation-range addresses are ignored until they are replaced with real
+# public IPs, matching the previous log-shipper allowlist behaviour.
+observability_ingest_sources: "{{ groups['docker']
+  | map('extract', hostvars)
+  | map(attribute='ansible_host')
+  | reject('match', '^203[.]0[.]113[.]')
+  | map('regex_replace', '$', '/32')
+  | list }}"
+common_firewall_source_rules:
+  - port: "9428"
+    proto: "tcp"
+    sources: "{{ observability_ingest_sources }}"
+
+# 4 GB of RAM is enough for a small stack if the limits below are respected.
+victorialogs_http_port: 9428
+victorialogs_retention: "30d"
+victorialogs_retention_max_disk_usage_percent: 80
+victorialogs_auth_username: "shipper"
+
+victoriametrics_http_addr: "127.0.0.1:8428"
+victoriametrics_retention: "12"
+victoriametrics_scrape_interval: "30s"
+
+grafana_admin_user: "admin"
+grafana_port: 443

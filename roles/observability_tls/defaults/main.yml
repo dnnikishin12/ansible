@@ -1,0 +1,11 @@
+---
+observability_hostname: "grafana.{{ internal_domain | default('example.com') }}"
+observability_letsencrypt_enabled: true
+observability_letsencrypt_email: "admin@{{ internal_domain | default('example.com') }}"
+observability_letsencrypt_staging: false
+observability_tls_group: "ssl-cert"
+observability_tls_cert_dir: "/etc/ssl/observability"
+observability_tls_cert_path: "{{ observability_tls_cert_dir }}/fullchain.pem"
+observability_tls_key_path: "{{ observability_tls_cert_dir }}/privkey.pem"
+observability_tls_csr_path: "{{ observability_tls_cert_dir }}/server.csr"
+observability_tls_selfsigned_days: "+825d"

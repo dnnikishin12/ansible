@@ -1,0 +1,129 @@
+---
+- name: Validate the PostgreSQL exporter password
+  ansible.builtin.assert:
+    that:
+      - postgres_exporter_password | length >= 16
+      - "'ChangeMe' not in postgres_exporter_password"
+    fail_msg: >-
+      Set a real vault_postgres_exporter_password in the encrypted vault
+      (at least 16 characters, not the ChangeMe placeholder).
+  no_log: true
+
+- name: Create the postgres_exporter group
+  ansible.builtin.group:
+    name: "{{ postgres_exporter_group }}"
+    system: true
+
+- name: Create the postgres_exporter user
+  ansible.builtin.user:
+    name: "{{ postgres_exporter_user }}"
+    group: "{{ postgres_exporter_group }}"
+    home: "{{ postgres_exporter_data_dir }}"
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: true
+
+- name: Create the exporter directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ postgres_exporter_config_dir }}"
+      owner: root
+      group: "{{ postgres_exporter_group }}"
+      mode: "0750"
+    - path: "{{ postgres_exporter_data_dir }}"
+      owner: "{{ postgres_exporter_user }}"
+      group: "{{ postgres_exporter_group }}"
+      mode: "0750"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Download postgres_exporter
+  ansible.builtin.get_url:
+    url: "{{ postgres_exporter_download_url }}"
+    dest: "/tmp/postgres_exporter-{{ postgres_exporter_version }}.linux-{{ postgres_exporter_arch }}.tar.gz"
+    checksum: "sha256:{{ postgres_exporter_checksums[postgres_exporter_arch] }}"
+    mode: "0644"
+
+- name: Extract postgres_exporter
+  ansible.builtin.unarchive:
+    src: "/tmp/postgres_exporter-{{ postgres_exporter_version }}.linux-{{ postgres_exporter_arch }}.tar.gz"
+    dest: /tmp
+    remote_src: true
+    creates: "{{ postgres_exporter_extract_dir }}/postgres_exporter"
+
+- name: Install the postgres_exporter binary
+  ansible.builtin.copy:
+    src: "{{ postgres_exporter_extract_dir }}/postgres_exporter"
+    dest: /usr/local/bin/postgres_exporter
+    owner: root
+    group: root
+    mode: "0755"
+    remote_src: true
+  notify: Restart postgres_exporter
+
+- name: Configure the postgres_exporter connection
+  ansible.builtin.copy:
+    content: |
+      DATA_SOURCE_NAME={{ postgres_exporter_dsn }}
+    dest: "{{ postgres_exporter_config_dir }}/postgres_exporter.env"
+    owner: root
+    group: "{{ postgres_exporter_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart postgres_exporter
+
+- name: Install the postgres_exporter systemd unit
+  ansible.builtin.template:
+    src: postgres_exporter.service.j2
+    dest: /etc/systemd/system/postgres_exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart postgres_exporter
+
+- name: Create the monitoring role on the primary
+  community.postgresql.postgresql_user:
+    name: "{{ postgres_exporter_db_user }}"
+    password: "{{ postgres_exporter_password }}"
+    role_attr_flags: "LOGIN"
+    state: present
+    login_user: postgres
+    login_unix_socket: /var/run/postgresql
+  become: true
+  become_user: postgres
+  no_log: true
+  when: inventory_hostname in groups['postgres_primary'] | default([])
+
+- name: Grant pg_monitor to the monitoring role
+  community.postgresql.postgresql_query:
+    query: "GRANT pg_monitor TO {{ postgres_exporter_db_user }}"
+    login_user: postgres
+    login_unix_socket: /var/run/postgresql
+  become: true
+  become_user: postgres
+  changed_when: false
+  when: inventory_hostname in groups['postgres_primary'] | default([])
+
+- name: Ensure postgres_exporter is enabled and running
+  ansible.builtin.systemd:
+    name: postgres_exporter.service
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for the postgres_exporter metrics endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ postgres_exporter_port }}/metrics"
+    status_code: 200
+  register: postgres_exporter_health
+  retries: 12
+  delay: 5
+  until: postgres_exporter_health.status | default(0) == 200
+  changed_when: false

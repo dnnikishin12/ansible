@@ -69,13 +69,13 @@ proxmox_vms:
     ip: "203.0.113.17/24"
     tags: [docker, test]
 
-  - name: elk01
+  - name: obs01
     vmid: 108
     cores: 4
-    memory: 16384
+    memory: 8192
     disk: 200
     ip: "203.0.113.18/24"
-    tags: [elk]
+    tags: [observability]
 
   - name: nginx01
     vmid: 109

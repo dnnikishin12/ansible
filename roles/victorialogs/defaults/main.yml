@@ -1,0 +1,27 @@
+---
+victorialogs_version: "v1.53.0"
+victorialogs_arch: >-
+  {{ {'x86_64': 'amd64', 'aarch64': 'arm64'}.get(ansible_architecture, 'amd64') }}
+victorialogs_checksums:
+  amd64: "55feba89713cafa952673f91b8b38e7701bb0290989263da671b47a0de16edd3"
+  arm64: "301b7ef12ff9fac7f70b155191affe07ac6212755514174461d775548699ef96"
+victorialogs_release_base: "https://github.com/VictoriaMetrics/VictoriaLogs/releases/download"
+victorialogs_download_url: >-
+  {{ victorialogs_release_base }}/{{ victorialogs_version }}/victoria-logs-linux-{{ victorialogs_arch }}-{{ victorialogs_version }}.tar.gz
+
+victorialogs_user: "victoria-logs"
+victorialogs_group: "victoria-logs"
+victorialogs_data_dir: "/var/lib/victoria-logs"
+victorialogs_conf_dir: "/etc/victoria-logs"
+victorialogs_http_port: 9428
+victorialogs_http_addr: ":9428"
+victorialogs_retention: "30d"
+victorialogs_retention_max_disk_usage_percent: 80
+victorialogs_auth_username: "shipper"
+victorialogs_auth_password: "{{ vault_victorialogs_password | default('') }}"
+victorialogs_tls_enabled: true
+victorialogs_tls_cert_path: "{{ observability_tls_cert_path | default('/etc/ssl/observability/fullchain.pem') }}"
+victorialogs_tls_key_path: "{{ observability_tls_key_path | default('/etc/ssl/observability/privkey.pem') }}"
+victorialogs_health_url: >-
+  {{ ('https' if victorialogs_tls_enabled | bool else 'http')
+     ~ '://127.0.0.1:' ~ victorialogs_http_port ~ '/health' }}

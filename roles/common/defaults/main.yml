@@ -67,9 +67,13 @@ common_firewall_ssh_sources:
   - "0.0.0.0/0"
   - "::/0"
 common_firewall_rules: []
-# Rules with multiple allowed sources, for example Logstash Beats input.
+# Rules with multiple allowed sources, for example VictoriaLogs ingestion.
 # Each item: {port, proto, sources: [ip, ...]}.
 common_firewall_source_rules: []
+# Exporters scraped by the observability host. Kept separate from
+# common_firewall_source_rules so service group vars cannot overwrite them.
+common_monitoring_firewall_rules: []
+common_monitoring_firewall_rules_extra: []
 
 common_sysctl:
   vm.swappiness: 10

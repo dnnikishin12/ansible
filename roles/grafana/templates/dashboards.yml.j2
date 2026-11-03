@@ -1,0 +1,12 @@
+# Managed by Ansible
+apiVersion: 1
+providers:
+  - name: TLCamp
+    orgId: 1
+    folder: TLCamp
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: {{ grafana_dashboards_dir }}

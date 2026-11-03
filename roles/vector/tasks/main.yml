@@ -1,0 +1,87 @@
+---
+- name: Validate the VictoriaLogs shipping password
+  ansible.builtin.assert:
+    that:
+      - vector_victorialogs_password | length >= 16
+      - "'ChangeMe' not in vector_victorialogs_password"
+    fail_msg: >-
+      Set a real vault_victorialogs_password in the encrypted vault
+      (at least 16 characters, not the ChangeMe placeholder).
+  no_log: true
+
+- name: Validate the S3 log archive settings
+  ansible.builtin.assert:
+    that:
+      - vector_logs_s3_bucket | length > 0
+      - vector_logs_s3_access_key_id | length > 0
+      - vector_logs_s3_secret_access_key | length > 0
+      - "'ChangeMe' not in vector_logs_s3_access_key_id"
+      - "'ChangeMe' not in vector_logs_s3_secret_access_key"
+    fail_msg: >-
+      logs_s3_enabled=true requires a bucket and credentials. Set
+      vault_logs_s3_* or reuse existing vault_rclone_s3_* / vault_walg_s3_*
+      values. The bucket itself must already exist.
+  no_log: true
+  when: vector_logs_s3_enabled | bool
+
+- name: Download the Vector package
+  ansible.builtin.get_url:
+    url: "{{ vector_deb_url }}"
+    dest: "/tmp/vector_{{ vector_version }}-1_{{ vector_deb_arch }}.deb"
+    checksum: "sha256:{{ vector_deb_checksums[vector_deb_arch] }}"
+    mode: "0644"
+
+- name: Install Vector
+  ansible.builtin.apt:
+    deb: "/tmp/vector_{{ vector_version }}-1_{{ vector_deb_arch }}.deb"
+    state: present
+
+- name: Add the Vector user to the Docker group
+  ansible.builtin.user:
+    name: vector
+    groups: docker
+    append: true
+  notify: Restart Vector
+
+- name: Create the Vector data directory
+  ansible.builtin.file:
+    path: /var/lib/vector
+    state: directory
+    owner: vector
+    group: vector
+    mode: "0750"
+
+- name: Deploy the Vector pipeline
+  ansible.builtin.template:
+    src: vector.yaml.j2
+    dest: /etc/vector/vector.yaml
+    owner: root
+    group: vector
+    mode: "0640"
+  notify: Restart Vector
+
+- name: Store Vector runtime secrets
+  ansible.builtin.template:
+    src: vector.default.j2
+    dest: /etc/default/vector
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart Vector
+
+- name: Validate the Vector configuration
+  ansible.builtin.command:
+    cmd: /usr/bin/vector validate /etc/vector/vector.yaml
+  environment:
+    VICTORIALOGS_PASSWORD: "{{ vector_victorialogs_password }}"
+    LOGS_S3_ACCESS_KEY_ID: "{{ vector_logs_s3_access_key_id }}"
+    LOGS_S3_SECRET_ACCESS_KEY: "{{ vector_logs_s3_secret_access_key }}"
+  changed_when: false
+  no_log: true
+
+- name: Ensure Vector is enabled and running
+  ansible.builtin.systemd:
+    name: vector.service
+    state: started
+    enabled: true

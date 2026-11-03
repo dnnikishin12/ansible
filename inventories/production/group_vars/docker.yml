@@ -5,3 +5,23 @@ docker_live_restore: true
 docker_prune_enabled: true
 docker_prune_schedule: "Sun *-*-* 04:00:00"
 docker_apps_dir: "/srv/docker"
+
+# Vector reads Docker logs through the Docker API and writes each event to
+# VictoriaLogs and to object storage. The S3 bucket must already exist; the
+# role does not create buckets or lifecycle rules.
+logs_s3_enabled: true
+logs_s3_bucket: "{{ vault_logs_s3_bucket | default('tlcamp-logs') }}"
+# Set vault_logs_s3_endpoint to the provider endpoint. If it is unset, the
+# rclone endpoint is used, then the VK Cloud endpoint. Override this variable
+# directly for AWS S3.
+logs_s3_endpoint: "{{ vault_logs_s3_endpoint
+  | default(vault_rclone_s3_endpoint
+    | default('https://hb.ru-msk.vkcloud-storage.ru', true), true) }}"
+logs_s3_region: "{{ vault_logs_s3_region | default('ru-msk') }}"
+logs_s3_access_key_id: "{{ vault_logs_s3_access_key_id
+  | default(vault_walg_s3_access_key_id
+    | default(vault_rclone_s3_access_key_id | default(''), true), true) }}"
+logs_s3_secret_access_key: "{{ vault_logs_s3_secret_access_key
+  | default(vault_walg_s3_secret_access_key
+    | default(vault_rclone_s3_secret_access_key | default(''), true), true) }}"
+logs_s3_force_path_style: true

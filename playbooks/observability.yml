@@ -1,0 +1,27 @@
+---
+- name: Node exporter on every VM
+  hosts: all
+  become: true
+  roles:
+    - role: node_exporter
+      tags: [metrics, node_exporter]
+
+- name: PostgreSQL metrics exporter
+  hosts: postgres
+  become: true
+  roles:
+    - role: postgres_exporter
+      tags: [metrics, postgres_exporter, postgres]
+
+- name: Observability stack
+  hosts: observability
+  become: true
+  roles:
+    - role: observability_tls
+      tags: [observability, tls]
+    - role: victorialogs
+      tags: [observability, logs, victorialogs]
+    - role: victoriametrics
+      tags: [observability, metrics, victoriametrics]
+    - role: grafana
+      tags: [observability, grafana]

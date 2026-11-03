@@ -1,0 +1,90 @@
+---
+- name: Create the VictoriaMetrics group and user
+  ansible.builtin.group:
+    name: "{{ victoriametrics_group }}"
+    system: true
+
+- name: Create the VictoriaMetrics user
+  ansible.builtin.user:
+    name: "{{ victoriametrics_user }}"
+    group: "{{ victoriametrics_group }}"
+    home: "{{ victoriametrics_data_dir }}"
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+
+- name: Create the VictoriaMetrics directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ victoriametrics_user }}"
+    group: "{{ victoriametrics_group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ victoriametrics_data_dir }}"
+      mode: "0750"
+    - path: "{{ victoriametrics_conf_dir }}"
+      mode: "0755"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Download VictoriaMetrics
+  ansible.builtin.get_url:
+    url: "{{ victoriametrics_download_url }}"
+    dest: "/tmp/victoria-metrics-{{ victoriametrics_version }}-{{ victoriametrics_arch }}.tar.gz"
+    checksum: "sha256:{{ victoriametrics_checksums[victoriametrics_arch] }}"
+    mode: "0644"
+
+- name: Extract VictoriaMetrics
+  ansible.builtin.unarchive:
+    src: "/tmp/victoria-metrics-{{ victoriametrics_version }}-{{ victoriametrics_arch }}.tar.gz"
+    dest: "/tmp/victoria-metrics-{{ victoriametrics_version }}"
+    remote_src: true
+    creates: "/tmp/victoria-metrics-{{ victoriametrics_version }}/victoria-metrics-prod"
+
+- name: Install the VictoriaMetrics binary
+  ansible.builtin.copy:
+    src: "/tmp/victoria-metrics-{{ victoriametrics_version }}/victoria-metrics-prod"
+    dest: /usr/local/bin/victoria-metrics
+    owner: root
+    group: root
+    mode: "0755"
+    remote_src: true
+  notify: Restart VictoriaMetrics
+
+- name: Deploy the VictoriaMetrics scrape configuration
+  ansible.builtin.template:
+    src: scrape.yml.j2
+    dest: "{{ victoriametrics_conf_dir }}/scrape.yml"
+    owner: root
+    group: "{{ victoriametrics_group }}"
+    mode: "0640"
+  notify: Restart VictoriaMetrics
+
+- name: Install the VictoriaMetrics systemd unit
+  ansible.builtin.template:
+    src: victoria-metrics.service.j2
+    dest: /etc/systemd/system/victoria-metrics.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart VictoriaMetrics
+
+- name: Ensure VictoriaMetrics is enabled and running
+  ansible.builtin.systemd:
+    name: victoria-metrics.service
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for the VictoriaMetrics health endpoint
+  ansible.builtin.uri:
+    url: "http://{{ victoriametrics_http_addr }}/health"
+    status_code: 200
+  register: victoriametrics_health
+  retries: 18
+  delay: 5
+  until: victoriametrics_health.status | default(0) == 200
+  changed_when: false

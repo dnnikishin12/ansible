@@ -6,7 +6,10 @@ internal_domain: "campbox.tech"
 environment_name: "production"
 
 gitlab_hostname: "gitlab-test.{{ internal_domain }}"
-kibana_hostname: "elastik.{{ internal_domain }}"
+# Public name for Grafana and the VictoriaLogs ingestion endpoint.
+grafana_hostname: "grafana.{{ internal_domain }}"
+# Shared by Grafana, VictoriaLogs, Vector, and the TLS role.
+observability_hostname: "{{ grafana_hostname }}"
 
 ansible_user: "root"
 ansible_ssh_private_key_file: "/home/service/.ssh/id_ed25519_ansible"
@@ -90,6 +93,14 @@ common_firewall_ssh_sources:
   - "0.0.0.0/0"
   - "::/0"
 common_firewall_rules: []
+# Monitoring ports are kept in a separate list so group-level firewall rules
+# (for example PostgreSQL application clients) cannot overwrite them.
+common_monitoring_firewall_rules:
+  - port: "9100"
+    proto: "tcp"
+    sources:
+      - "{{ hostvars[groups['observability'][0]].ansible_host }}/32"
+common_monitoring_firewall_rules_extra: []
 
 common_sysctl:
   vm.swappiness: 10
@@ -103,10 +114,6 @@ common_sysctl_extra: {}
 # ---------------------------------------------------------------------------
 # Cross-service defaults
 # ---------------------------------------------------------------------------
-# Elastic's official artifacts CDN returns 403 for this network. The Tsinghua
-# mirror carries the same signed Elastic 9.x repository and is used by both the
-# ELK host and every Filebeat log shipper.
-elastic_stack_repo_url: "https://mirrors.tuna.tsinghua.edu.cn/elasticstack/9.x/apt"
 # Default retention for locally produced backups. The maintenance VM can copy
 # them to object storage using the rclone role.
 local_backup_keep_days: 7

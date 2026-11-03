@@ -1,0 +1,26 @@
+[Unit]
+Description=VictoriaMetrics
+Documentation=https://docs.victoriametrics.com/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ victoriametrics_user }}
+Group={{ victoriametrics_group }}
+ExecStart=/usr/local/bin/victoria-metrics \
+  -storageDataPath={{ victoriametrics_data_dir }} \
+  -httpListenAddr={{ victoriametrics_http_addr }} \
+  -promscrape.config={{ victoriametrics_conf_dir }}/scrape.yml \
+  -retentionPeriod={{ victoriametrics_retention }} \
+  -memory.allowedPercent={{ victoriametrics_memory_allowed_percent }}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ victoriametrics_data_dir }}
+
+[Install]
+WantedBy=multi-user.target

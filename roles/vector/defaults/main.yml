@@ -1,0 +1,24 @@
+---
+vector_version: "0.61.0"
+vector_deb_arch: >-
+  {{ {'x86_64': 'amd64', 'aarch64': 'arm64'}.get(ansible_architecture, 'amd64') }}
+vector_deb_checksums:
+  amd64: "1cf2bc77f865e05e539c177feb0eb5feee20ee2762ea379f101610c9625fc4b8"
+  arm64: "60cc8a938a2389ce7de4d2e7c0f025ff052eb18cfcfe47f69776570cfcab1456"
+vector_deb_url: >-
+  https://github.com/vectordotdev/vector/releases/download/v{{ vector_version }}/vector_{{ vector_version }}-1_{{ vector_deb_arch }}.deb
+
+vector_environment: "{{ environment_name | default('production') }}"
+vector_victorialogs_password: >-
+  {{ victorialogs_auth_password | default(vault_victorialogs_password | default('')) }}
+vector_victorialogs_username: "{{ victorialogs_auth_username | default('shipper') }}"
+vector_victorialogs_port: "{{ victorialogs_http_port | default(9428) }}"
+vector_logs_s3_enabled: "{{ logs_s3_enabled | default(true) }}"
+vector_logs_s3_bucket: "{{ logs_s3_bucket | default('tlcamp-logs') }}"
+vector_logs_s3_endpoint: "{{ logs_s3_endpoint | default('') }}"
+vector_logs_s3_region: "{{ logs_s3_region | default('ru-msk') }}"
+vector_logs_s3_access_key_id: "{{ logs_s3_access_key_id | default('') }}"
+vector_logs_s3_secret_access_key: "{{ logs_s3_secret_access_key | default('') }}"
+vector_logs_s3_force_path_style: "{{ logs_s3_force_path_style | default(true) }}"
+vector_logs_s3_prefix: "docker/{{ environment_name | default('production') }}/{{ inventory_hostname }}"
+vector_buffer_max_size: 1073741824

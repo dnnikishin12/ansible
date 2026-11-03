@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: observability_tls
+  author: TLCamp Infrastructure
+  description: Shared TLS certificate for Grafana and VictoriaLogs
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies: []

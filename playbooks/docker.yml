@@ -7,6 +7,8 @@
   roles:
     - role: docker
       tags: [docker, docker_prod]
+    - role: vector
+      tags: [vector, logging, docker_prod]
 
 - name: Docker host in test
   hosts: docker_test
@@ -14,3 +16,5 @@
   roles:
     - role: docker
       tags: [docker, docker_test]
+    - role: vector
+      tags: [vector, logging, docker_test]

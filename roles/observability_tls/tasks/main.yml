@@ -1,0 +1,139 @@
+---
+- name: Ensure the ssl-cert group exists
+  ansible.builtin.group:
+    name: "{{ observability_tls_group }}"
+    system: true
+
+- name: Create the observability certificate directory
+  ansible.builtin.file:
+    path: "{{ observability_tls_cert_dir }}"
+    state: directory
+    owner: root
+    group: "{{ observability_tls_group }}"
+    mode: "0750"
+
+- name: Map the observability hostname to loopback for local clients
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "127.0.0.1 {{ observability_hostname }}"
+    state: present
+
+- name: Install certbot
+  ansible.builtin.apt:
+    name: certbot
+    state: present
+    update_cache: true
+  when: observability_letsencrypt_enabled | bool
+
+- name: Create the Let's Encrypt deploy hook directory
+  ansible.builtin.file:
+    path: /etc/letsencrypt/renewal-hooks/deploy
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: observability_letsencrypt_enabled | bool
+
+- name: Install the observability certificate renewal hook
+  ansible.builtin.copy:
+    content: |
+      #!/bin/sh
+      # Managed by Ansible
+      set -eu
+      install -m 0640 -o root -g {{ observability_tls_group }} \
+        /etc/letsencrypt/live/{{ observability_hostname }}/fullchain.pem \
+        {{ observability_tls_cert_path }}
+      install -m 0640 -o root -g {{ observability_tls_group }} \
+        /etc/letsencrypt/live/{{ observability_hostname }}/privkey.pem \
+        {{ observability_tls_key_path }}
+      systemctl try-restart victoria-logs.service grafana-server.service || true
+    dest: /etc/letsencrypt/renewal-hooks/deploy/observability-cert.sh
+    owner: root
+    group: root
+    mode: "0755"
+  when: observability_letsencrypt_enabled | bool
+
+- name: Build the certbot argument list
+  ansible.builtin.set_fact:
+    observability_certbot_argv: >-
+      {{ ['certbot', 'certonly', '--standalone', '--non-interactive', '--agree-tos',
+          '--email', observability_letsencrypt_email, '--domain', observability_hostname,
+          '--keep-until-expiring']
+         + (['--staging'] if observability_letsencrypt_staging | bool else []) }}
+  when: observability_letsencrypt_enabled | bool
+
+- name: Obtain or renew the observability Let's Encrypt certificate
+  ansible.builtin.command:
+    argv: "{{ observability_certbot_argv }}"
+  register: observability_certbot
+  changed_when: >-
+    'Successfully received certificate' in observability_certbot.stdout
+    or 'Certificate renewed' in observability_certbot.stdout
+  when: observability_letsencrypt_enabled | bool
+
+- name: Ensure the certbot renewal timer is active
+  ansible.builtin.systemd:
+    name: certbot.timer
+    enabled: true
+    state: started
+  when: observability_letsencrypt_enabled | bool
+
+- name: Install the Let's Encrypt certificate files
+  ansible.builtin.copy:
+    src: "/etc/letsencrypt/live/{{ observability_hostname }}/{{ item.src }}"
+    dest: "{{ item.dest }}"
+    remote_src: true
+    owner: root
+    group: "{{ observability_tls_group }}"
+    mode: "0640"
+  loop:
+    - src: fullchain.pem
+      dest: "{{ observability_tls_cert_path }}"
+    - src: privkey.pem
+      dest: "{{ observability_tls_key_path }}"
+  loop_control:
+    label: "{{ item.src }}"
+  no_log: true
+  notify: Restart observability services
+  when: observability_letsencrypt_enabled | bool
+
+- name: Install self-signed TLS dependencies
+  ansible.builtin.apt:
+    name:
+      - openssl
+      - python3-cryptography
+    state: present
+  when: not observability_letsencrypt_enabled | bool
+
+- name: Generate a self-signed private key
+  community.crypto.openssl_privatekey:
+    path: "{{ observability_tls_key_path }}"
+    size: 4096
+    type: RSA
+    mode: "0640"
+    owner: root
+    group: "{{ observability_tls_group }}"
+  when: not observability_letsencrypt_enabled | bool
+
+- name: Generate a self-signed certificate signing request
+  community.crypto.openssl_csr:
+    path: "{{ observability_tls_csr_path }}"
+    privatekey_path: "{{ observability_tls_key_path }}"
+    common_name: "{{ observability_hostname }}"
+    subject_alt_name:
+      - "DNS:{{ observability_hostname }}"
+    mode: "0600"
+  when: not observability_letsencrypt_enabled | bool
+
+- name: Generate a self-signed certificate
+  community.crypto.x509_certificate:
+    path: "{{ observability_tls_cert_path }}"
+    csr_path: "{{ observability_tls_csr_path }}"
+    privatekey_path: "{{ observability_tls_key_path }}"
+    provider: selfsigned
+    selfsigned_not_after: "{{ observability_tls_selfsigned_days }}"
+    mode: "0644"
+    owner: root
+    group: "{{ observability_tls_group }}"
+  notify: Restart observability services
+  when: not observability_letsencrypt_enabled | bool

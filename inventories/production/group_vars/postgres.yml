@@ -44,6 +44,14 @@ postgres_client_networks: "{{ postgres_app_client_rules | map(attribute='from') 
 # sources; pg01 also has the Valkey rules.
 firewall_extra_rules: "{{ postgres_app_client_rules }}"
 
+# The exporter is scraped by VictoriaMetrics over the public network. Keep it
+# closed for everyone else.
+common_monitoring_firewall_rules_extra:
+  - port: "9187"
+    proto: "tcp"
+    sources:
+      - "{{ hostvars[groups['observability'][0]].ansible_host }}/32"
+
 # pg01 -> pg02 -> pg03. pg03 is in another cloud and must not connect to pg01
 # directly. Slots are created on each direct upstream: replica_pg02 on pg01 and
 # replica_pg03 on pg02. Replicas absent from this map connect directly to the

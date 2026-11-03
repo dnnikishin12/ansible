@@ -1,0 +1,170 @@
+---
+- name: Validate the Grafana admin password
+  ansible.builtin.assert:
+    that:
+      - grafana_admin_password | length >= 12
+      - "'ChangeMe' not in grafana_admin_password"
+    fail_msg: >-
+      Set a real vault_grafana_admin_password in the encrypted vault
+      (at least 12 characters, not the ChangeMe placeholder).
+  no_log: true
+
+- name: Download the Grafana package
+  ansible.builtin.get_url:
+    url: "{{ grafana_deb_url }}"
+    dest: "/tmp/grafana_{{ grafana_version }}_{{ grafana_deb_arch }}.deb"
+    checksum: "sha256:{{ grafana_deb_checksums[grafana_deb_arch] }}"
+    mode: "0644"
+
+- name: Install Grafana and plugin dependencies
+  ansible.builtin.apt:
+    deb: "/tmp/grafana_{{ grafana_version }}_{{ grafana_deb_arch }}.deb"
+    state: present
+  notify:
+    - Reload systemd
+    - Restart Grafana
+
+- name: Install plugin dependencies
+  ansible.builtin.apt:
+    name:
+      - unzip
+      - ca-certificates
+    state: present
+
+- name: Add the Grafana user to the certificate group
+  ansible.builtin.user:
+    name: "{{ grafana_user }}"
+    groups: "{{ observability_tls_group | default('ssl-cert') }}"
+    append: true
+
+- name: Create the Grafana provisioning directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ grafana_user }}"
+    group: "{{ grafana_group }}"
+    mode: "0755"
+  loop:
+    - /etc/grafana/provisioning/datasources
+    - /etc/grafana/provisioning/dashboards
+    - "{{ grafana_dashboards_dir }}"
+
+- name: Check whether the VictoriaLogs plugin is installed
+  ansible.builtin.stat:
+    path: "{{ grafana_plugins_dir }}/victoriametrics-logs-datasource/plugin.json"
+  register: grafana_vl_plugin_stat
+
+- name: Read the installed VictoriaLogs plugin version
+  ansible.builtin.slurp:
+    src: "{{ grafana_plugins_dir }}/victoriametrics-logs-datasource/plugin.json"
+  register: grafana_vl_plugin_json
+  when: grafana_vl_plugin_stat.stat.exists
+
+- name: Determine whether the plugin must be installed
+  ansible.builtin.set_fact:
+    grafana_vl_plugin_install: >-
+      {{ grafana_vl_plugin_installed_version != grafana_victorialogs_plugin_version }}
+  vars:
+    grafana_vl_plugin_installed_version: >-
+      {{ (grafana_vl_plugin_json.content | b64decode | from_json).info.version
+         if grafana_vl_plugin_stat.stat.exists else '' }}
+
+- name: Download the VictoriaLogs Grafana plugin
+  ansible.builtin.get_url:
+    url: "{{ grafana_victorialogs_plugin_url }}"
+    dest: "/tmp/victoriametrics-logs-datasource-v{{ grafana_victorialogs_plugin_version }}.zip"
+    checksum: "sha256:{{ grafana_victorialogs_plugin_checksum }}"
+    mode: "0644"
+  when: grafana_vl_plugin_install | bool
+
+- name: Remove the previous plugin version
+  ansible.builtin.file:
+    path: "{{ grafana_plugins_dir }}/victoriametrics-logs-datasource"
+    state: absent
+  when: grafana_vl_plugin_install | bool
+
+- name: Install the VictoriaLogs Grafana plugin
+  ansible.builtin.unarchive:
+    src: "/tmp/victoriametrics-logs-datasource-v{{ grafana_victorialogs_plugin_version }}.zip"
+    dest: "{{ grafana_plugins_dir }}"
+    remote_src: true
+    owner: "{{ grafana_user }}"
+    group: "{{ grafana_group }}"
+  when: grafana_vl_plugin_install | bool
+
+- name: Deploy the Grafana datasources
+  ansible.builtin.template:
+    src: datasources.yml.j2
+    dest: /etc/grafana/provisioning/datasources/tlcamp.yml
+    owner: root
+    group: "{{ grafana_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart Grafana
+
+- name: Deploy the Grafana dashboard provider
+  ansible.builtin.template:
+    src: dashboards.yml.j2
+    dest: /etc/grafana/provisioning/dashboards/tlcamp.yml
+    owner: root
+    group: "{{ grafana_group }}"
+    mode: "0644"
+  notify: Restart Grafana
+
+- name: Deploy the TLCamp dashboard
+  ansible.builtin.copy:
+    src: dashboards/tlcamp-overview.json
+    dest: "{{ grafana_dashboards_dir }}/tlcamp-overview.json"
+    owner: "{{ grafana_user }}"
+    group: "{{ grafana_group }}"
+    mode: "0644"
+  notify: Restart Grafana
+
+- name: Install the Grafana configuration
+  ansible.builtin.template:
+    src: grafana.ini.j2
+    dest: /etc/grafana/grafana.ini
+    owner: root
+    group: "{{ grafana_group }}"
+    mode: "0640"
+  notify: Restart Grafana
+
+- name: Create the Grafana systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/grafana-server.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Allow Grafana to bind port 443
+  ansible.builtin.copy:
+    content: |
+      [Service]
+      AmbientCapabilities=CAP_NET_BIND_SERVICE
+      CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+    dest: /etc/systemd/system/grafana-server.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart Grafana
+
+- name: Ensure Grafana is enabled and running
+  ansible.builtin.systemd:
+    name: grafana-server.service
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for the Grafana health endpoint
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ grafana_port }}/api/health"
+    validate_certs: false
+    status_code: 200
+  register: grafana_health
+  retries: 30
+  delay: 5
+  until: grafana_health.status | default(0) == 200
+  changed_when: false

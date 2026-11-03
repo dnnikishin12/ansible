@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: vector
+  author: TLCamp Infrastructure
+  description: Vector Docker log shipper with VictoriaLogs and S3 sinks
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies: []

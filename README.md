@@ -9,13 +9,14 @@ Playbook-и для развёртывания и сопровождения де
   публичным IP и защищены TLS;
 - Valkey на хосте primary;
 - два production-хоста Docker и один test-хост Docker;
-- Elasticsearch + Logstash + Kibana;
+- Grafana + VictoriaLogs + VictoriaMetrics: метрики хостов, логи
+  контейнеров и состояние репликации PostgreSQL;
 - nginx с терминацией TLS;
 - maintenance-хост с rclone для выгрузки резервных копий.
 
 Репозиторий описывает **платформу**, а не прикладные сервисы: Docker-хосты
 подготавливаются, но приложения в них не разворачиваются. GitLab, PostgreSQL,
-Valkey и Elastic Stack устанавливаются и настраиваются.
+Valkey и стек наблюдаемости устанавливаются и настраиваются.
 
 > **Перед первым запуском обязательно прочитайте раздел
 > [«Что заменить перед запуском»](#что-заменить-перед-запуском).**
@@ -60,10 +61,10 @@ PostgreSQL используют одни и те же публичные адр�
 | `pg01` | `203.0.113.12` | PostgreSQL 18 primary + Valkey | 4 / 16 ГБ / 200 ГБ |
 | `pg02` | `203.0.113.13` | PostgreSQL 18 реплика первого уровня, upstream для `pg03` | 4 / 16 ГБ / 200 ГБ |
 | `pg03` | `203.0.113.14` | PostgreSQL 18 каскадная реплика во втором облаке | 4 / 16 ГБ / 200 ГБ |
-| `docker-prod-01` | `203.0.113.15` | Docker Engine, production | 4 / 8 ГБ / 100 ГБ |
-| `docker-prod-02` | `203.0.113.16` | Docker Engine, production во втором облаке | 4 / 8 ГБ / 100 ГБ |
-| `docker-test-01` | `203.0.113.17` | Docker Engine, test | 6 / 8 ГБ / 128 ГБ |
-| `elk01` | `203.0.113.18` | Elasticsearch, Logstash, Kibana | 4 / 16 ГБ / 200 ГБ |
+| `docker-prod-01` | `203.0.113.15` | Docker Engine + Vector, production | 4 / 8 ГБ / 100 ГБ |
+| `docker-prod-02` | `203.0.113.16` | Docker Engine + Vector, production во втором облаке | 4 / 8 ГБ / 100 ГБ |
+| `docker-test-01` | `203.0.113.17` | Docker Engine + Vector, test | 6 / 8 ГБ / 128 ГБ |
+| `obs01` | `203.0.113.18` | Grafana, VictoriaLogs, VictoriaMetrics | 4 / 8 ГБ / 200 ГБ |
 | `nginx01` | `203.0.113.19` | nginx, TLS-терминация | 2 / 2 ГБ / 40 ГБ |
 | `maint01` | `203.0.113.20` | rclone, backup jobs | 2 / 2 ГБ / 50 ГБ |
 
@@ -86,21 +87,24 @@ PostgreSQL использует те же публичные адреса, чт�
 
 ```text
    HTTPS :443  ──▶ gitlab01 (GitLab, TLS + Let's Encrypt)
-   HTTPS :443  ──▶ elk01    (Kibana, TLS + Let's Encrypt)
+   HTTPS :443  ──▶ obs01    (Grafana, TLS + Let's Encrypt)
 
-  Filebeat (все хосты, кроме elk01) ──▶ Logstash :5044 на elk01 (public)
+  Vector (Docker-хосты) ──TLS + basic auth──▶ VictoriaLogs :9428 на obs01
+  Vector (Docker-хосты) ──HTTPS─────────────▶ S3 archive
+  VictoriaMetrics на obs01 ──scrape :9100──▶ node_exporter на всех ВМ
+  VictoriaMetrics на obs01 ──scrape :9187──▶ postgres_exporter на PG-хостах
   PostgreSQL pg01 ──streaming (TLS/public)──▶ pg02
   pg02 ──streaming (TLS/public)──▶ pg03 (второе облако)
   Docker prod hosts + внешний app/pgAdmin 95.163.209.96 ──TLS/public──▶ PostgreSQL :5432
   Docker hosts ──public/restricted──▶ Valkey :6379 на pg01 (без TLS)
 ```
 
-- GitLab и Kibana опубликованы напрямую: DNS указывает на `gitlab01` и
-  `elk01`, TLS завершается на самих сервисах. GitLab использует встроенный
-  nginx и Let's Encrypt; Kibana слушает `:443` и получает сертификат через
-  certbot.
+- GitLab и Grafana опубликованы напрямую: DNS указывает на `gitlab01` и
+  `obs01`, TLS завершается на самих сервисах. GitLab использует встроенный
+  nginx и Let's Encrypt; Grafana и VictoriaLogs используют общий сертификат,
+  который выпускает роль `observability_tls`.
 - `nginx01` остаётся отдельным хостом для других задач и не участвует в
-  публикации GitLab/Kibana.
+  публикации GitLab/Grafana.
 - PostgreSQL реплицируется каскадом: `pg01` → `pg02`, затем
   `pg02` → `pg03`. Оба соединения идут по публичным IP и защищены TLS;
   `pg03` не подключается к `pg01` напрямую.
@@ -110,13 +114,20 @@ PostgreSQL использует те же публичные адреса, чт�
   inventory.
 - Physical replication slots создаются на непосредственном upstream:
   `replica_pg02` на `pg01` и `replica_pg03` на `pg02`.
-- Valkey не имеет TLS. UFW разрешает `6379` только с публичных адресов
-  `docker-prod-01` и `docker-test-01`; `docker-prod-02` во втором облаке
-  намеренно не допускается, пока для Valkey не включён TLS.
-- Filebeat отправляет системные логи, логи nginx, Docker, GitLab и PostgreSQL
-  в Logstash на `elk01` по публичной сети. UFW на `elk01` разрешает `5044`
-  только с публичных адресов хостов группы `log_shippers`. Сам `elk01`
-  исключён из группы, чтобы не отправлять логи самому себе.
+- Valkey не имеет TLS. UFW разрешает `6379` только с публичного адреса
+  `docker-prod-01` и внешнего app-сервера `95.163.209.96`; остальные хосты,
+  включая `docker-prod-02` и `docker-test-01`, намеренно не допускаются,
+  пока для Valkey не включён TLS.
+- Vector на Docker-хостах читает логи контейнеров через Docker API и
+  отправляет их в VictoriaLogs по TLS с basic auth. UFW на `obs01` разрешает
+  `9428/tcp` только с публичных адресов хостов группы `docker`; self-логи
+  хоста `obs01` в VictoriaLogs не отправляются.
+- Вторая копия каждого события уходит в S3 (sink `aws_s3`) с дисковым
+  буфером и at-least-once доставкой. Bucket должен существовать заранее;
+  credentials и endpoint задаются в vault.
+- `node_exporter` установлен на всех ВМ, `postgres_exporter` — на
+  PostgreSQL-хостах. VictoriaMetrics на `obs01` сам опрашивает их по
+  публичным адресам; порты `9100`/`9187` в UFW открыты только для `obs01`.
 
 ## Что заменить перед запуском
 
@@ -133,9 +144,9 @@ PostgreSQL использует те же публичные адреса, чт�
 2. **Домен** `campbox.tech` в
    `inventories/production/group_vars/all/main.yml`
    (`internal_domain`, `gitlab_hostname` = `gitlab-test.<domain>`,
-   `kibana_hostname` = `elastik.<domain>`) и `proxmox_searchdomain` в
+   `grafana_hostname` = `grafana.<domain>`) и `proxmox_searchdomain` в
    `provisioning/proxmox/vars.yml`. DNS-записи этих имён должны указывать на
-   публичные адреса `gitlab01` и `elk01`.
+   публичные адреса `gitlab01` и `obs01`.
 3. **План адресации**: `203.0.113.0/24` — только placeholder. Публичной
    management-сети нет; замените адреса ВМ на реальные публичные. Если
    используете Proxmox, задайте там реальный публичный шлюз.
@@ -174,16 +185,25 @@ PostgreSQL использует те же публичные адреса, чт�
    обязательны. Для GitLab S3 задайте
    `vault_gitlab_backup_s3_access_key_id` и
    `vault_gitlab_backup_s3_secret_access_key`.
+   Для наблюдаемости задайте `vault_grafana_admin_password`,
+   `vault_victorialogs_password` и `vault_postgres_exporter_password`.
+   Для архива логов задайте `vault_logs_s3_bucket`, endpoint, region и
+   credentials `vault_logs_s3_*`; если они не заданы, используются
+   credentials rclone или WAL-G. Bucket `tlcamp-logs` (или значение
+   `vault_logs_s3_bucket`) должен быть создан заранее — роль не создаёт
+   bucket и lifecycle-правила.
 8. **Параметры Proxmox** в `provisioning/proxmox/vars.yml`:
    `proxmox_api_host`, `proxmox_node`, `proxmox_template`, `proxmox_storage`,
    `proxmox_bridge`, если используете provisioning.
 9. **Размеры ВМ** в `provisioning/proxmox/vars.yml`, если используете
    provisioning. Размеры `pg03` и `docker-prod-02` задаются отдельно во
    втором облаке.
-10. **TLS-сертификаты**: GitLab и Kibana получают сертификаты Let's Encrypt
-    автоматически. Для отдельного `nginx01` по умолчанию создаётся
-    self-signed сертификат; для production подготовьте
-    `nginx_tls_mode: custom` и свои файлы.
+10. **TLS-сертификаты**: GitLab и Grafana/VictoriaLogs получают сертификаты
+    Let's Encrypt автоматически. Для `obs01` сертификат выпускается ролью
+    `observability_tls` для `grafana.<domain>` и используется обоими
+    сервисами. Для отдельного `nginx01` по умолчанию создаётся self-signed
+    сертификат; для production подготовьте `nginx_tls_mode: custom` и свои
+    файлы.
 11. **CA для приложений**: скопируйте `files/postgres-tls/ca.crt` на
     `docker-prod-02` (и другие app-хосты) и укажите его в приложении как
     `sslrootcert`. Без этого `sslmode=verify-full` не сможет проверить
@@ -210,7 +230,7 @@ PostgreSQL использует те же публичные адреса, чт�
 - пользователь `ubuntu` с `sudo` без пароля или с паролем, который знает
   Ansible;
 - SSH-ключ пользователя `ubuntu` уже добавлен в `authorized_keys`;
-- исходящий доступ к репозиториям Ubuntu, Docker, GitLab, Elastic и PGDG;
+- исходящий доступ к репозиториям Ubuntu, Docker, GitLab, Grafana и PGDG;
 - синхронизированное время (роль `common` настраивает chrony);
 - для `pg03`: публичный доступ к `pg02` на TCP `5432` и к репозиториям PGDG.
   Для приложений: публичный доступ к `pg01` на TCP `5432`; для `pg02`:
@@ -327,8 +347,8 @@ ansible-playbook playbooks/site.yml --ask-vault-pass
 ```
 
 `site.yml` импортирует bootstrap и все сервисные playbook-и в правильном
-порядке: bootstrap → PostgreSQL/Valkey → GitLab → Docker → ELK → Filebeat →
-nginx → maintenance.
+порядке: bootstrap → PostgreSQL/Valkey → GitLab → наблюдаемость → Docker +
+Vector → nginx → maintenance.
 
 ### 6. Проверка
 
@@ -358,7 +378,8 @@ make verify VAULT_ARGS=--ask-vault-pass
 | `make site` | полное развёртывание |
 | `make verify` | post-deploy проверки |
 | `make verify-postgres` | только PostgreSQL: репликация, TLS и WAL-G |
-| `make gitlab`, `make postgres`, `make postgres-tls`, `make docker`, `make elk`, `make filebeat`, `make nginx`, `make maintenance` | отдельный сервис |
+| `make verify-observability` | только Grafana, VictoriaLogs и VictoriaMetrics |
+| `make gitlab`, `make postgres`, `make postgres-tls`, `make docker`, `make observability`, `make nginx`, `make maintenance` | отдельный сервис |
 | `make vault-edit` | редактирование vault |
 | `make clean` | удалить venv и локальный кэш |
 
@@ -388,9 +409,14 @@ Ansible как group vars для всех хостов. Файл зашифро�
 | `vault_walg_secondary_s3_access_key_id` | access key для WAL-G в Yandex Cloud (secondary) |
 | `vault_walg_secondary_s3_secret_access_key` | secret key для WAL-G в Yandex Cloud |
 | `vault_valkey_password` | `requirepass` для Valkey |
-| `vault_elastic_password` | пароль суперпользователя `elastic` |
-| `vault_kibana_system_password` | пароль `kibana_system` |
-| `vault_logstash_internal_password` | пароль `logstash_internal` |
+| `vault_grafana_admin_password` | пароль администратора Grafana |
+| `vault_victorialogs_password` | пароль basic auth для Vector и datasource Grafana |
+| `vault_postgres_exporter_password` | пароль роли `postgres_exporter` с `pg_monitor` |
+| `vault_logs_s3_bucket` | bucket для архива логов (по умолчанию `tlcamp-logs`) |
+| `vault_logs_s3_endpoint` | endpoint S3-совместимого хранилища |
+| `vault_logs_s3_region` | region для S3 sink |
+| `vault_logs_s3_access_key_id` | access key для архива логов |
+| `vault_logs_s3_secret_access_key` | secret key для архива логов |
 | `vault_rclone_s3_endpoint` | S3-совместимый endpoint |
 | `vault_rclone_s3_access_key_id` | access key для rclone |
 | `vault_rclone_s3_secret_access_key` | secret key для rclone |
@@ -406,8 +432,8 @@ openssl rand -hex 32     # для vault_walg_libsodium_key (64 hex-символ�
 
 Для `vault_postgres_replication_password` лучше использовать hex или другой
 алфавит без `:`, `\` и переводов строк: пароль попадает в `.pgpass` на
-репликах. Пароли Elastic и Valkey могут содержать большинство спецсимволов,
-шаблоны экранируют их при подстановке.
+репликах. Пароли Grafana, VictoriaLogs и Valkey могут содержать большинство
+спецсимволов, шаблоны экранируют их при подстановке.
 
 Полезные команды:
 
@@ -431,9 +457,11 @@ ansible-vault rekey  inventories/production/group_vars/all/vault.yml
   пароля может потребоваться перезапуск PostgreSQL на репликах.
 - **Valkey**: обновите vault и запустите `playbooks/postgres.yml` (Valkey
   входит в этот playbook) или `--tags valkey`.
-- **Elastic Stack**: обновите vault и запустите `playbooks/elk.yml`.
-  Роль проверит `kibana_system` и `logstash_internal` и перезапустит сервисы
-  только при необходимости.
+- **Наблюдаемость**: обновите `vault_grafana_admin_password`,
+  `vault_victorialogs_password` или `vault_postgres_exporter_password` и
+  запустите `make observability`. Grafana может не обновить уже созданного
+  пользователя из `grafana.ini`; при необходимости используйте
+  `grafana-cli admin reset-admin-password`.
 
 ## Inventory
 
@@ -451,10 +479,9 @@ all
 ├── docker
 │   ├── docker_prod        docker-prod-01, docker-prod-02
 │   └── docker_test        docker-test-01
-├── elk                    elk01
+├── observability          obs01
 ├── nginx                  nginx01
-├── maintenance            maint01
-└── log_shippers           gitlab, postgres, docker, nginx, maintenance
+└── maintenance            maint01
 ```
 
 `pg01` одновременно входит в `postgres_primary` и `valkey`. Его
@@ -473,8 +500,10 @@ NAT-egress, переопределите `from` в `postgres_app_client_rules`. 
 Docker-хосты и внешний app-сервер подключаются к PostgreSQL через
 публичный/NAT-адрес; для PostgreSQL приватная сеть не используется.
 
-`log_shippers` — группа-агрегатор: она включает все хосты, кроме `elk01`.
-Filebeat ставится на 9 машин; `elk01` хранит логи локально.
+`obs01` — единственный хост в группе `observability`. На нём работают
+Grafana, VictoriaLogs и VictoriaMetrics; `node_exporter` установлен на всех
+хостах, `postgres_exporter` — на `postgres`. Старые группы `elk` и
+`log_shippers` удалены: логи контейнеров собирает Vector только с Docker-хостов.
 
 ### Топология PostgreSQL
 
@@ -513,8 +542,8 @@ Filebeat ставится на 9 машин; `elk01` хранит логи ло�
 
 Хост, который не управляется репозиторием (например, Node.js-приложение и
 pgAdmin на `95.163.209.96`), не добавляется в `hosts.yml`: иначе Ansible
-начнёт пытаться подключиться к нему и включит его в `log_shippers`. Вместо
-этого добавьте его публичный source-адрес в `postgres_app_client_rules`
+начнёт пытаться подключиться к нему и включит его в группы Docker/мониторинга.
+Вместо этого добавьте его публичный source-адрес в `postgres_app_client_rules`
 (`group_vars/postgres.yml`). Сейчас там уже есть правило `95.163.209.96/32`;
 оно попадает и в UFW, и в `pg_hba.conf` на `pg01`, `pg02` и `pg03`.
 
@@ -565,6 +594,14 @@ services:
 В pgAdmin root certificate указывается как путь **внутри контейнера** —
 `/etc/ssl/certs/postgres-ca.crt`. Браузер, с которого открыт pgAdmin, к
 PostgreSQL не подключается: соединение устанавливает контейнер pgAdmin.
+
+В web-режиме pgAdmin файловый менеджер показывает только своё per-user
+хранилище `/var/lib/pgadmin/storage/<user>`, поэтому произвольный путь
+`/etc/ssl/certs/...` в нём не виден. Загрузите `ca.crt` через иконку
+файлового менеджера рядом с полем Root certificate (вкладка Parameters, в
+старых версиях — SSL) или положите файл в
+`/var/lib/pgadmin/storage/<user>/` и выберите его оттуда. CA публичный, его
+безопасно загружать через web-интерфейс.
 
 #### Права на создание БД и ролей
 
@@ -643,7 +680,7 @@ const client = new Client({
 |---|---|---|
 | `internal_domain` | `campbox.tech` | заменить |
 | `gitlab_hostname` | `gitlab-test.<domain>` | внешнее имя GitLab |
-| `kibana_hostname` | `elastik.<domain>` | внешнее имя Kibana |
+| `grafana_hostname` | `grafana.<domain>` | внешнее имя Grafana и VictoriaLogs |
 | `ansible_user` | `ubuntu` | начальный SSH-пользователь |
 | `common_timezone` | `Europe/Moscow` | |
 | `common_firewall_ssh_sources` | `0.0.0.0/0`, `::/0` | SSH со всех адресов |
@@ -738,12 +775,11 @@ ansible all -m ansible.builtin.command -a "cloud-init status --wait"
 | `site.yml` | `all` | полный стек, импортирует остальные playbook-и |
 | `postgres.yml` | `postgres_primary`, `postgres_replicas`, `postgres_cascading`, `valkey` | PostgreSQL 18: primary, реплика первого уровня и каскадная реплика + Valkey |
 | `gitlab.yml` | `gitlab` | GitLab CE + backup timer |
-| `docker.yml` | `docker_prod`, `docker_test` | Docker Engine, daemon.json, prune timer |
-| `elk.yml` | `elk` | Elasticsearch, Logstash, Kibana, security |
-| `filebeat.yml` | `log_shippers` | Filebeat |
-| `nginx.yml` | `nginx` | TLS, reverse proxy для GitLab и Kibana |
+| `docker.yml` | `docker_prod`, `docker_test` | Docker Engine, daemon.json, prune timer, Vector |
+| `observability.yml` | `all`, `postgres`, `observability` | node_exporter, postgres_exporter, Grafana, VictoriaLogs, VictoriaMetrics |
+| `nginx.yml` | `nginx` | TLS, reverse proxy для GitLab |
 | `maintenance.yml` | `maintenance` | rclone, systemd timers |
-| `verify.yml` | `all`, `postgres`, `nginx` | smoke-проверки, включая каскадную репликацию |
+| `verify.yml` | `all`, `postgres`, `observability`, `docker`, `nginx` | smoke-проверки, включая каскадную репликацию |
 | `proxmox-provision.yml` | `localhost` | создание/обновление ВМ |
 
 ### Теги
@@ -769,8 +805,9 @@ ansible-playbook playbooks/site.yml --check --diff --ask-vault-pass
 
 Основные теги: `common`, `bootstrap`, `postgres`, `postgres_tls`,
 `postgres_primary`, `postgres_replica`, `postgres_cascading`, `valkey`,
-`gitlab`, `docker`, `docker_prod`, `docker_test`, `elk`, `logging`,
-`filebeat`, `nginx`, `maintenance`, `rclone`, `provision`, `proxmox`.
+`gitlab`, `docker`, `docker_prod`, `docker_test`, `observability`,
+`victorialogs`, `victoriametrics`, `grafana`, `vector`, `logging`, `nginx`,
+`maintenance`, `rclone`, `provision`, `proxmox`.
 
 `site.yml` запускает bootstrap первым, поэтому на свежих ВМ достаточно одной
 команды. Если нужен только bootstrap, запускайте `bootstrap.yml` отдельно.
@@ -979,8 +1016,9 @@ Valkey 7.2 устанавливается из репозитория Ubuntu 24.
 - пароль `requirepass` из vault;
 - bind на `127.0.0.1` и публичный IP;
 - AOF `everysec`, RDB snapshots;
-- UFW: порт `6379` только с публичных адресов `docker-prod-01` и
-  `docker-test-01`; `docker-prod-02` во втором облаке не допускается без TLS;
+- UFW: порт `6379` только с публичного адреса `docker-prod-01` и внешнего
+  app-сервера `95.163.209.96`; `docker-prod-02` и `docker-test-01` не
+  допускаются без TLS;
 - проверка `PING` с паролем.
 
 `valkey_maxmemory` по умолчанию пуст (без лимита). Для кэша задайте,
@@ -1026,7 +1064,9 @@ nginx. Если разработчики подключаются из друг�
 - каталог приложений `/srv/docker`;
 - пользователь `deploy` в группе `docker`;
 - еженедельный `docker system prune` (таймер systemd);
-- проверка `docker info`.
+- проверка `docker info`;
+- Vector читает логи контейнеров через Docker API и отправляет их в
+  VictoriaLogs и S3 (см. раздел «Наблюдаемость»).
 
 Приложения и compose-файлы не деплоятся. Размещайте их в `/srv/docker` и
 открывайте нужные порты через `firewall_extra_rules` в
@@ -1041,36 +1081,49 @@ nginx. Если разработчики подключаются из друг�
 > Для строгой фильтрации добавьте `ufw-docker` или настройте `DOCKER-USER`
 > вручную.
 
-### Elastic Stack 9.x
+### Наблюдаемость: Grafana, VictoriaLogs, VictoriaMetrics
 
-- Elasticsearch, Kibana, Logstash из репозитория Elastic 9.x;
-- single-node Elasticsearch, security enabled, HTTP TLS выключен, потому что
-  Elasticsearch слушает только `127.0.0.1`;
-- Kibana опубликована напрямую на `:443` (`https://elastik.<domain>`),
-  TLS-сертификат выпускается через certbot/Let's Encrypt;
-- heap Elasticsearch и Logstash ограничен под 4 ГБ RAM тестовой ВМ;
-- Logstash beats input `0.0.0.0:5044`, firewall разрешает только публичные
-  адреса хостов группы `log_shippers`;
-- роли/пользователи `kibana_system`, `logstash_internal`, `logstash_writer`;
-- Filebeat на остальных хостах отправляет логи в Logstash.
+- `node_exporter` на всех ВМ (`:9100`, UFW только с `obs01`);
+- `postgres_exporter` на PostgreSQL-хостах (`:9187`, UFW только с `obs01`);
+  роль создаёт пользователя `postgres_exporter` с `pg_monitor` на primary;
+- VictoriaMetrics single-node на `obs01`, слушает `127.0.0.1:8428` и сам
+  опрашивает node/postgres exporters;
+- VictoriaLogs single-node на `obs01`, слушает `:9428` с TLS и basic auth;
+  retention `30d`, порог использования диска `80%`;
+- Grafana на `obs01`, слушает `:443` с тем же TLS-сертификатом, что и
+  VictoriaLogs; datasource-ы и dashboard провижинятся автоматически;
+- Vector на Docker-хостах: `docker_logs` → обогащение (`host`,
+  `environment`, `dataset`) → HTTP sink в VictoriaLogs и `aws_s3` sink;
+- S3-архив использует дисковый буфер, gzip и NDJSON; ключи объектов имеют
+  вид `docker/<environment>/<host>/<год>/<месяц>/<день>/<час>/...`;
+- Grafana dashboard `TLCamp Overview`: CPU, память, диск, load average, сеть,
+  `pg_up`, WAL lag, replay lag и панель логов контейнеров.
 
 Проверка:
 
 ```bash
-curl -u elastic 'http://127.0.0.1:9200/_cluster/health?pretty'
-curl -u elastic 'http://127.0.0.1:9200/_cat/indices?v'
+# на obs01
+curl -fsS http://127.0.0.1:8428/health
+curl -u shipper -k https://127.0.0.1:9428/health
+curl -k https://127.0.0.1:443/api/health
+
+# цели scrape
+curl -fsS 'http://127.0.0.1:8428/api/v1/targets?state=active' | jq .
+
+# на Docker-хосте
+systemctl status vector
+curl -fsS http://127.0.0.1:8686/health
 ```
 
-Пароль `elastic` задаётся через vault. При первом запуске роль сбрасывает
-временный пароль через `elasticsearch-reset-password`, затем устанавливает
-значение из vault. Index pattern и dashboards автоматически не создаются:
-после первого запуска создайте в Kibana index pattern `filebeat-*` (или
-`logs-*`, если будете менять pipeline).
+Пароли Grafana и VictoriaLogs задаются в vault. Bucket для логов должен
+существовать заранее; Vector не создаёт bucket и не управляет lifecycle.
+При потере связи с S3 Vector буферизует события на диск и повторяет отправку
+(at-least-once, возможны дубликаты).
 
 ### nginx
 
 Роль `nginx` остаётся в репозитории для отдельного хоста `nginx01`, но
-**не используется** для публикации GitLab и Kibana: они подключены к
+**не используется** для публикации GitLab и Grafana: они подключены к
 интернету напрямую.
 
 - TLS-терминация и reverse proxy для задач, которые явно размещены на
@@ -1087,13 +1140,17 @@ curl -u elastic 'http://127.0.0.1:9200/_cat/indices?v'
 | Имя | IP | TLS |
 |---|---|---|
 | `gitlab-test.campbox.tech` | `gitlab01` | встроенный nginx GitLab + Let's Encrypt |
-| `elastik.campbox.tech` | `elk01` | Kibana `:443` + certbot/Let's Encrypt |
+| `grafana.campbox.tech` | `obs01` | Grafana `:443` + VictoriaLogs `:9428`, certbot/Let's Encrypt |
 
 GitLab выпускает сертификат при `gitlab-ctl reconfigure`
-(`gitlab_letsencrypt_enable: true`). Kibana получает сертификат через
-`certbot certonly --standalone`; таймер `certbot.timer` продлевает его, а
-deploy-hook копирует файлы в `/etc/kibana/certs` и перезапускает Kibana.
-Порты `80` и `443` должны быть открыты в UFW и в firewall облака.
+(`gitlab_letsencrypt_enable: true`). Grafana и VictoriaLogs получают общий
+сертификат через роль `observability_tls`: `certbot certonly --standalone`
+выпускает его для `grafana.<domain>`, таймер `certbot.timer` продлевает, а
+deploy-hook копирует файлы в `/etc/ssl/observability/` и перезапускает оба
+сервиса. Порты `80` и `443` должны быть открыты в UFW и в firewall облака.
+Для теста без публичного DNS установите
+`observability_letsencrypt_enabled: false` — роль создаст self-signed
+сертификат.
 
 Для отдельного `nginx01` по-прежнему доступен `nginx_tls_mode: "selfsigned"`
 или `custom`:
@@ -1198,14 +1255,14 @@ ansible-playbook playbooks/postgres.yml --tags postgres_tls --ask-vault-pass
 DNS:
 
 - `gitlab-test.<domain>` → публичный IP `gitlab01`;
-- `elastik.<domain>` → публичный IP `elk01`;
+- `grafana.<domain>` → публичный IP `obs01`;
 - GitLab SSH для `git clone` работает на `gitlab01:22`.
 
 Для теста без DNS добавьте записи в `/etc/hosts` на рабочей машине.
 
-Let's Encrypt настраивается для GitLab и Kibana. Сертификаты продлеваются
-автоматически (`gitlab-ctl` и `certbot.timer`); после смены DNS или IP
-перезапустите соответствующую роль.
+Let's Encrypt настраивается для GitLab и Grafana/VictoriaLogs. Сертификаты
+продлеваются автоматически (`gitlab-ctl` и `certbot.timer`); после смены DNS
+или IP перезапустите соответствующую роль.
 
 ## Резервное копирование
 
@@ -1214,6 +1271,7 @@ Let's Encrypt настраивается для GitLab и Kibana. Сертифи
 | PostgreSQL WAL-G (full) | VK Cloud + Yandex Cloud: `s3://tlcamp-db-backup/db/pg18/main-encrypted-v1` | воскресенье 02:00 | 4 full + diffs в каждом S3 |
 | PostgreSQL WAL-G (diff) | те же два облака | ежедневно 03:00 | в цепочке full |
 | GitLab backup | локально `gitlab01:/var/opt/gitlab/backups` + S3 `s3://tlcamp-gitlab-backup/gitlab01/` | ежедневно 02:30 | 7 дней локально, 30 дней в S3 |
+| Логи контейнеров | S3 `s3://<logs bucket>/docker/<environment>/<host>/...` | непрерывно, Vector | по lifecycle-политике bucket; роль её не создаёт |
 | rclone jobs | `maint01` | по расписанию job-а | зависит от S3 |
 
 Таймеры:
@@ -1382,14 +1440,15 @@ GitLab backup не включает конфигурацию, секреты, Re
   `prohibit-password`), fail2ban;
 - отдельный пользователь `deploy` с sudo;
 - пароли и ключи в Ansible Vault;
-- Elasticsearch security enabled, Kibana/Logstash-пользователи с паролями;
+- Grafana и VictoriaLogs закрыты TLS и basic auth; VictoriaMetrics слушает
+  только loopback; exporters открыты только для `obs01`;
 - Valkey с `requirepass`;
 - PostgreSQL: SCRAM для TCP, peer для локальных; приложения и репликация
   только через публичные `hostssl`-подключения (`sslmode=verify-full`) с
   сертификатами приватного CA; порт `5432` в UFW разрешён только конкретным
   публичным `/32`;
-- Let's Encrypt TLS на публичных GitLab и Kibana; self-signed/custom — на
-  отдельном `nginx01`;
+- Let's Encrypt TLS на публичных GitLab и Grafana/VictoriaLogs;
+  self-signed/custom — на отдельном `nginx01`;
 - unattended-upgrades;
 - `StrictHostKeyChecking=accept-new` для первичного подключения к новым ВМ.
 
@@ -1398,41 +1457,44 @@ GitLab backup не включает конфигурацию, секреты, Re
 - `common_admin_sudo_nopasswd: true` — удобно, но повышает последствия
   компрометации ключа. Для строгих требований поставьте `false`.
 - Valkey работает **без TLS** и доступен по публичному IP только с
-  `docker-prod-01` и `docker-test-01`. Хост во втором облаке не должен
-  обращаться к Valkey напрямую; если это требуется, сначала настройте TLS и
-  отдельный публичный endpoint.
+  `docker-prod-01` и внешнего app-сервера `95.163.209.96`. Хосты во втором
+  облаке и `docker-test-01` не должны обращаться к Valkey напрямую; если это
+  требуется, сначала настройте TLS и отдельный публичный endpoint.
 - Приватный ключ PostgreSQL CA (`files/postgres-tls/ca.key`) хранится на
   контроллере. Без резервной копии потеря ключа потребует перевыпуска CA и
   сертификатов на всех хостах PostgreSQL.
-- Elasticsearch HTTP TLS выключен, потому что слушает loopback
-  (`127.0.0.1:9200/9300`). Kibana опубликована напрямую на `:443`; сам
-  Elasticsearch снаружи недоступен.
+- VictoriaMetrics слушает только `127.0.0.1:8428` и снаружи недоступен.
+  Grafana и VictoriaLogs опубликованы через `:443`/`:9428` с TLS; ingestion
+  в VictoriaLogs разрешён только с публичных адресов Docker-хостов.
 - На `gitlab01` UFW открывает только `22/tcp` (SSH и Git по SSH),
   `80/tcp` (ACME и redirect на HTTPS) и `443/tcp`. Внутренние порты GitLab
   (`5050`, `8060`, `9094` и экспортёры) снаружи закрыты.
-- На `elk01` UFW открывает `22/tcp`, `80/tcp` (только для продления
-  сертификата), `443/tcp` (Kibana) и `5044/tcp` **только с публичных
-  адресов хостов группы `log_shippers`**. Список строится из inventory;
-  placeholder-адреса `203.0.113.x` исключаются до заполнения реальных IP.
-  Порты `5601`, `9200`, `9300` и `9600` снаружи закрыты.
+- На `obs01` UFW открывает `22/tcp`, `80/tcp` (ACME), `443/tcp` (Grafana) и
+  `9428/tcp` **только с публичных адресов хостов группы `docker`**. Список
+  строится из inventory; placeholder-адреса `203.0.113.x` исключаются до
+  заполнения реальных IP. Порты `8428`, `9100` и `9187` снаружи закрыты.
 - Проверить фактическую экспозицию можно через
   `ansible-playbook playbooks/verify.yml --tags verify_firewall`.
-- UFW ограничивает источники, но часть межсервисного трафика остаётся
-  незашифрованной: Filebeat → Logstash идёт по plain Beats. Для строгих
-  требований включите TLS на этом участке или поднимите VPN; PostgreSQL TLS
-  этого не покрывает.
+- UFW ограничивает источники. Трафик Vector → VictoriaLogs идёт по TLS;
+  PostgreSQL также использует TLS. Незашифрованными остаются Valkey
+  (ограничен UFW) и часть служебного трафика между хостами. Для строгих
+  требований поднимите VPN/private network.
+- Grafana и VictoriaLogs используют basic auth и общий TLS-сертификат;
+  пароли хранятся в vault. Для production настройте алертинг в Grafana.
 - Резервные копии содержат секреты (GitLab secrets, дампы БД). Защищайте S3
-  и локальные каталоги.
+  и локальные каталоги. S3-архив логов также может содержать чувствительные
+  данные приложений.
 - Пароль root GitLab из vault — начальный. Смените его и уберите/обновите
   значение в vault.
-- Зафиксируйте версии GitLab/Elastic/Docker и проверяйте путь обновления.
-  Автоматическое обновление major-версий может сломать сервис.
+- Зафиксируйте версии GitLab/Docker и проверяйте путь обновления.
+  Версии VictoriaMetrics, VictoriaLogs, Vector, Grafana-плагина и
+  postgres_exporter заданы в defaults ролей.
 - `StrictHostKeyChecking=accept-new` доверяет ключу при первом подключении.
   Для повышенных требований заранее добавьте fingerprint-ы в `known_hosts`
   и используйте строгую проверку.
-- Нет централизованного мониторинга, IDS/IPS и аудита. Для production
-  добавьте Prometheus/Grafana, alerting и централизованный сбор логов
-  (сам ELK уже есть, но алертов нет).
+- Централизованный сбор логов контейнеров и метрики есть, но алертинг по
+  умолчанию не настроен. Добавьте alert rules в Grafana и проверку S3
+  lifecycle.
 
 ## Проверка и диагностика
 
@@ -1468,8 +1530,10 @@ systemctl status postgresql@18-main              # pg01, pg02, pg03
 systemctl status valkey-server                   # pg01
 systemctl status docker                          # docker-prod-01/02, docker-test-01
 systemctl status nginx                           # nginx01
-systemctl status filebeat                        # все хосты, кроме elk01
-systemctl status elasticsearch kibana logstash   # elk01
+systemctl status vector                          # docker-prod-01/02, docker-test-01
+systemctl status prometheus-node-exporter         # все хосты
+systemctl status postgres_exporter               # pg01, pg02, pg03
+systemctl status victoria-logs victoria-metrics grafana-server  # obs01
 systemctl status gitlab-runsvdir                 # gitlab01
 
 # PostgreSQL
@@ -1492,17 +1556,19 @@ sudo gitlab-ctl status
 curl -fsS http://127.0.0.1/-/health
 curl -fsS https://gitlab-test.<domain>/users/sign_in >/dev/null
 
-# Elastic Stack
-curl -u elastic 'http://127.0.0.1:9200/_cluster/health?pretty'
-curl -fsS https://elastik.<domain>/api/status
+# Наблюдаемость
+curl -fsS http://127.0.0.1:8428/health
+curl -u shipper -k https://127.0.0.1:9428/health
+curl -k https://127.0.0.1:443/api/health
+curl -fsS http://127.0.0.1:8428/api/v1/targets?state=active | jq .
 
-# nginx01 (не используется для GitLab/Kibana)
+# nginx01 (не используется для GitLab/Grafana)
 sudo nginx -t
 
 # Логи
 journalctl -u postgresql@18-main -n 100 --no-pager
-journalctl -u elasticsearch -n 100 --no-pager
-journalctl -u gitlab-runsvdir -n 100 --no-pager
+journalctl -u victoria-logs -u victoria-metrics -u grafana-server -n 100 --no-pager
+journalctl -u vector -n 100 --no-pager
 ```
 
 ### Типовые проблемы
@@ -1514,8 +1580,6 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
 | Потеряли SSH после bootstrap | проверьте `sshd_config`, UFW и не забанен ли ваш IP в fail2ban; используйте консоль гипервизора/облака |
 | `Host key verification failed` | сменился ключ ВМ; удалите старый fingerprint из `known_hosts` |
 | `community.*` collection not found | `ansible-galaxy collection install -r requirements.yml` |
-| Elasticsearch не стартует | `vm.max_map_count`, memory lock, heap, `journalctl -u elasticsearch` |
-| Kibana 401/502 | пароль `kibana_system`, `server.publicBaseUrl`, доступность Elasticsearch |
 | GitLab долго не поднимается | `gitlab-ctl reconfigure` может идти минутами; смотрите `gitlab-ctl status` |
 | Реплика не догоняет | слот на непосредственном upstream, `pg_stat_replication`, `.pgpass`, `pg_hba`, firewall |
 | Роль отклоняет существующую реплику | upstream/slot в `postgres_replication_topology` не совпадает с `SHOW primary_conninfo` / `SHOW primary_slot_name`; пересоберите реплику или обновите конфигурацию вручную |
@@ -1526,7 +1590,12 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
 | Второй S3 отстаёт или не принимает копии | `journalctl -u wal-g-backup@*`, `walg-secondary backup-list`, `wal-g copy --from /etc/wal-g/config.json --to /etc/wal-g/config-secondary.json`, credentials второго S3 |
 | Не восстанавливается зашифрованный бэкап | тот же `vault_walg_libsodium_key`, что при создании; без него restore невозможен |
 | `postgres_replica_rebuild` | после пересборки верните `false` |
-| nginx отдаёт 502 | upstream IP/порт, UFW на GitLab/ELK, `nginx -t` |
+| Grafana не открывается / 502 | сертификат в `/etc/ssl/observability`, `grafana.ini`, `systemctl status grafana-server`, UFW `443` |
+| Vector не читает Docker-сокет | пользователь `vector` в группе `docker`, `systemctl restart vector`, `journalctl -u vector` |
+| Логи не появляются в VictoriaLogs | `curl -u shipper -k https://grafana.<domain>:9428/health`, UFW `9428` с Docker-хостов, пароль в vault, `journalctl -u vector` |
+| Нет метрик хоста/PG | `up{job="node"}` / `up{job="postgres"}` в VictoriaMetrics, UFW `9100`/`9187`, `postgres_exporter` и пароль `pg_monitor` |
+| S3-архив не пополняется | credentials/endpoint/bucket, права на `PutObject`, `journalctl -u vector`, размер дискового буфера |
+| nginx отдаёт 502 | upstream IP/порт, UFW на GitLab, `nginx -t` |
 | Сертификат не тот | `nginx_tls_mode`, пути к cert/key, SAN, перезапуск nginx |
 | Переменные группы не применились | нет ли одновременно `group_vars/<group>.yml` и каталога `group_vars/<group>/` |
 | `stdout_callback` ошибка | в `ansible.cfg` используется `default` + `result_format: yaml` |
@@ -1541,9 +1610,9 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
 - **Proxmox VE** — опциональный гипервизор; `make site` не создаёт ВМ.
   `pg03` и `docker-prod-02` находятся во втором облаке и этим репозиторием не
   создаются.
-- **Нет HA**: GitLab, nginx, ELK, Valkey и maintenance — одиночные хосты.
-  PostgreSQL имеет primary, реплику первого уровня и каскадную реплику, но
-  без автоматического failover.
+- **Нет HA**: GitLab, nginx, `obs01`, Valkey и maintenance — одиночные
+  хосты. PostgreSQL имеет primary, реплику первого уровня и каскадную
+  реплику, но без автоматического failover.
 - **Межоблачная репликация асинхронная.** `pg03` зависит от доступности
   `pg02`; при потере `pg02` автоматического переключения на `pg01` нет.
   Задержка и стоимость трафика зависят от канала между облаками.
@@ -1560,23 +1629,26 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
 - **`pg03` — единственная реплика во втором облаке.** Если `pg02` пересобран
   или потерян, `pg03`, возможно, потребуется пересобрать; проверяйте
   `pg_replication_slots` и `pg_stat_wal_receiver`.
-- **ELK single-node**: нет кластера Elasticsearch, нет реплик шардов.
-  Snapshot/restore индексов не настроен; при необходимости добавьте
-  snapshot repository в S3 и ILM-политику. ILM/retention по умолчанию тоже
-  не настроены, поэтому индексы будут расти до ручной очистки.
+- **VictoriaLogs single-node**: нет кластера и реплик. Retention 30 дней,
+  при заполнении диска старые данные удаляются. Архив в S3 хранится по
+  lifecycle-политике bucket; роль её не настраивает.
+- **VictoriaMetrics single-node**: retention 12 месяцев, данные на локальном
+  диске `obs01`; backup метрик не настроен.
 - **Valkey**: AOF/RDB хранятся локально на `pg01`; централизованного backup
   нет. Для важных данных настройте копирование dump-ов отдельно.
-- **Нет управления DNS**: записи `gitlab-test` и `elastik` должны указывать
-  на публичные адреса соответствующих ВМ. Let's Encrypt для GitLab и Kibana
-  настраивается и продлевается автоматически.
+- **Нет управления DNS**: записи `gitlab-test` и `grafana` должны указывать
+  на публичные адреса соответствующих ВМ. Let's Encrypt для GitLab и
+  Grafana/VictoriaLogs настраивается и продлевается автоматически.
 - **Приложения не деплоятся**: Docker-хосты только подготовлены.
 - **rclone jobs пусты по умолчанию**: нет NFS/SSH-монтирования бэкапов
   других хостов; настройте `rclone_jobs` и источник данных.
-- **Нет централизованного мониторинга и алертинга.**
+- **Алертинг не настроен**: метрики и логи собираются, но alert rules в
+  Grafana нужно добавить отдельно.
 - **Нет автоматического restore-теста.** Резервные копии нужно регулярно
   проверять вручную.
-- **GitLab/Elastic/Docker версии не зафиксированы** (кроме major-ветки
-  Elastic 9.x). Для production добавьте pinning и процедуру обновления.
+- **Версии GitLab/Docker не зафиксированы**; версии компонентов
+  наблюдаемости заданы в defaults ролей. Для production добавьте pinning и
+  процедуру обновления.
 - **Секреты в vault** должны иметь реальные значения; примеры в
   `vault.yml.example` небезопасны.
 
@@ -1603,10 +1675,10 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
 │       │   ├── docker.yml
 │       │   ├── docker_prod.yml
 │       │   ├── docker_test.yml
-│       │   ├── elk.yml
 │       │   ├── gitlab.yml
 │       │   ├── maintenance.yml
 │       │   ├── nginx.yml
+│       │   ├── observability.yml
 │       │   ├── postgres.yml
 │       │   ├── postgres_primary.yml
 │       │   ├── postgres_replicas.yml
@@ -1619,11 +1691,10 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
 ├── playbooks/
 │   ├── bootstrap.yml
 │   ├── docker.yml
-│   ├── elk.yml
-│   ├── filebeat.yml
 │   ├── gitlab.yml
 │   ├── maintenance.yml
 │   ├── nginx.yml
+│   ├── observability.yml
 │   ├── postgres.yml
 │   ├── proxmox-provision.yml
 │   ├── site.yml
@@ -1634,15 +1705,19 @@ journalctl -u gitlab-runsvdir -n 100 --no-pager
 └── roles/
     ├── common/
     ├── docker/
-    ├── elastic_repo/
-    ├── elk/
-    ├── filebeat/
     ├── gitlab/
+    ├── grafana/
     ├── maintenance/
     ├── nginx/
+    ├── node_exporter/
+    ├── observability_tls/
     ├── postgres/
+    ├── postgres_exporter/
     ├── proxmox_vm/
-    └── valkey/
+    ├── valkey/
+    ├── vector/
+    ├── victorialogs/
+    └── victoriametrics/
 ```
 
 ## Статус

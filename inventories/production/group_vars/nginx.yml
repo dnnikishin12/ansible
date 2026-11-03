@@ -8,8 +8,6 @@ nginx_tls_key_src: ""
 
 nginx_gitlab_upstream: "{{ hostvars[groups['gitlab'][0]].ansible_host }}"
 nginx_gitlab_upstream_port: 80
-nginx_kibana_upstream: "{{ hostvars[groups['elk'][0]].ansible_host }}"
-nginx_kibana_upstream_port: 5601
 
 firewall_extra_rules:
   - port: "80"

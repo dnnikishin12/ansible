@@ -16,7 +16,7 @@
     enabled: true
   failed_when: false
 
-- name: Ensure rsyslog is enabled for Filebeat log collection
+- name: Ensure rsyslog is enabled for local system logging
   ansible.builtin.service:
     name: rsyslog
     state: started

@@ -1,0 +1,39 @@
+---
+- name: Install node_exporter
+  ansible.builtin.apt:
+    name: "{{ node_exporter_package }}"
+    state: present
+    update_cache: true
+
+- name: Create the node_exporter textfile directory
+  ansible.builtin.file:
+    path: "{{ node_exporter_textfile_dir }}"
+    state: directory
+    owner: prometheus
+    group: prometheus
+    mode: "0755"
+
+- name: Configure node_exporter arguments
+  ansible.builtin.template:
+    src: node_exporter.default.j2
+    dest: /etc/default/prometheus-node-exporter
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node_exporter
+
+- name: Ensure node_exporter is enabled and running
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter.service
+    state: started
+    enabled: true
+
+- name: Wait for the node_exporter metrics endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ node_exporter_port }}/metrics"
+    status_code: 200
+  register: node_exporter_health
+  retries: 12
+  delay: 5
+  until: node_exporter_health.status | default(0) == 200
+  changed_when: false

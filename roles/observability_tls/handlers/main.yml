@@ -1,0 +1,9 @@
+---
+- name: Restart observability services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - victoria-logs.service
+    - grafana-server.service
+  failed_when: false

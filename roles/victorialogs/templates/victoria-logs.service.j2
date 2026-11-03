@@ -1,0 +1,21 @@
+[Unit]
+Description=VictoriaLogs
+Documentation=https://docs.victoriametrics.com/victorialogs/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ victorialogs_user }}
+Group={{ victorialogs_group }}
+ExecStart=/usr/local/bin/victoria-logs -storageDataPath={{ victorialogs_data_dir }} -httpListenAddr={{ victorialogs_http_addr }}{% if victorialogs_tls_enabled | bool %} -tls -tlsCertFile={{ victorialogs_tls_cert_path }} -tlsKeyFile={{ victorialogs_tls_key_path }}{% endif %} -httpAuth.username={{ victorialogs_auth_username }} -httpAuth.password=file://{{ victorialogs_conf_dir }}/auth-password -retentionPeriod={{ victorialogs_retention }} -retention.maxDiskUsagePercent={{ victorialogs_retention_max_disk_usage_percent }}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ victorialogs_data_dir }}
+
+[Install]
+WantedBy=multi-user.target

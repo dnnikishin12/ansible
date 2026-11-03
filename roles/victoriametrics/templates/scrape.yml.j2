@@ -1,0 +1,42 @@
+# Managed by Ansible
+global:
+  scrape_interval: {{ victoriametrics_scrape_interval }}
+  scrape_timeout: {{ victoriametrics_scrape_timeout }}
+
+scrape_configs:
+  - job_name: node
+    static_configs:
+      - targets:
+{% for host in groups['all'] | sort %}
+{% if hostvars[host].ansible_host is defined and not hostvars[host].ansible_host.startswith('203.0.113.') %}
+          - "{{ hostvars[host].ansible_host }}:9100"
+{% endif %}
+{% endfor %}
+
+  - job_name: postgres
+    static_configs:
+      - targets:
+{% for host in groups['postgres'] | default([]) | sort %}
+{% if hostvars[host].ansible_host is defined and not hostvars[host].ansible_host.startswith('203.0.113.') %}
+          - "{{ hostvars[host].ansible_host }}:9187"
+{% endif %}
+{% endfor %}
+
+  - job_name: victoriametrics
+    static_configs:
+      - targets:
+          - "{{ victoriametrics_http_addr }}"
+
+{% set vl_password = victorialogs_auth_password | default(vault_victorialogs_password | default('')) %}
+{% if vl_password | length > 0 %}
+  - job_name: victorialogs
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
+    static_configs:
+      - targets:
+          - "127.0.0.1:9428"
+    basic_auth:
+      username: "{{ victorialogs_auth_username | default('shipper') }}"
+      password: "{{ vl_password }}"
+{% endif %}

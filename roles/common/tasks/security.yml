@@ -89,6 +89,19 @@
         label: "{{ item.0.port }}/{{ item.0.proto | default('tcp') }} <- {{ item.1 }}"
       when: common_firewall_source_rules | length > 0
 
+    - name: Allow monitoring exporter ports from the observability host
+      community.general.ufw:
+        rule: allow
+        port: "{{ item.0.port }}"
+        proto: "{{ item.0.proto | default('tcp') }}"
+        from_ip: "{{ item.1 }}"
+      loop: "{{ (common_monitoring_firewall_rules
+        + common_monitoring_firewall_rules_extra) | subelements('sources') }}"
+      loop_control:
+        label: "{{ item.0.port }}/{{ item.0.proto | default('tcp') }} <- {{ item.1 }}"
+      when: (common_monitoring_firewall_rules
+        + common_monitoring_firewall_rules_extra) | length > 0
+
     - name: Enable UFW
       community.general.ufw:
         state: enabled
